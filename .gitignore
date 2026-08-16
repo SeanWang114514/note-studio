@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+vite-dev.log
+vite-dev.err.log
+
+# 运行时日志
+logs/
+
+# 开发参考材料（第三方项目源码与研究文件，非本仓库依赖）
+vendor/
+vendor-study/
