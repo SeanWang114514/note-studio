@@ -1,5 +1,11 @@
-// PDF ↔ DOCX 转换客户端：调用本地 Python 转换服务（server/convert_server.py）
-// 服务默认 http://127.0.0.1:5198，可通过 VITE_CONVERT_URL 覆盖。
+/**
+ * PDF ↔ DOCX 转换客户端：调用本地 Python 转换服务（server/convert_server.py）
+ * 服务默认 http://127.0.0.1:5198，可通过 VITE_CONVERT_URL 覆盖。
+ *
+ * PDF→DOCX 结果缓存：pdfToDocxBytes 会按 PDF 内容算 SHA-256 作为缓存 key，
+ * 服务端把转换好的 docx 落在 cache/ 目录（不删除），下次打开同一 PDF 直接返回，
+ * 不再重新转换。「设置 → 缓存管理」可查看缓存文件并多选删除。
+ */
 const CONVERT_BASE =
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_CONVERT_URL) ||
   'http://127.0.0.1:5198'
@@ -34,6 +40,60 @@ const jobUid = () =>
     : `job-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** PDF 内容 → SHA-256 hex（缓存 key）。crypto.subtle 在 localhost 安全上下文可用。 */
+export async function sha256Hex(bytes) {
+  try {
+    const buf = await crypto.subtle.digest('SHA-256', bytes)
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  } catch {
+    // 极老浏览器没有 subtle：退化为简单 FNV-1a（仅作缓存 key，不要求密码学强度）
+    let h1 = 0x811c9dc5
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+    for (let i = 0; i < arr.length; i++) {
+      h1 ^= arr[i]
+      h1 = Math.imul(h1, 0x01000193) >>> 0
+    }
+    return ('00000000' + h1.toString(16)).slice(-8)
+  }
+}
+
+/**
+ * 读取缓存文件列表。
+ * @returns {Promise<Array<{key:string, size:number, mtime:number}>>}
+ */
+export async function listCacheFiles() {
+  const r = await fetchWithTimeout(`${CONVERT_BASE}/api/cache`, { method: 'GET' }, 8000)
+  if (!r.ok) throw new Error(`读取缓存列表失败 (${r.status})`)
+  const j = await r.json()
+  return (j.files || []).sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
+}
+
+/** 删除指定缓存文件。@param {string[]} keys @returns {Promise<number>} 成功删除数量 */
+export async function deleteCacheFiles(keys) {
+  if (!keys || !keys.length) return 0
+  const r = await fetchWithTimeout(
+    `${CONVERT_BASE}/api/cache/delete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys }),
+    },
+    15000,
+  )
+  if (!r.ok) {
+    let msg = `删除缓存失败 (${r.status})`
+    try {
+      const j = await r.json()
+      if (j && j.error) msg = j.error
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg)
+  }
+  const j = await r.json()
+  return Number(j?.deleted || 0)
+}
 
 /**
  * 轮询转换进度：POST 进行期间并行 GET /api/progress/<job>。
@@ -109,7 +169,8 @@ async function convertWithProgress(path, bytes, contentType, opts = {}) {
   }
   const pollP = onProgress ? pollProgress(job, onProgress, pollCtrl.signal) : null
   try {
-    const out = await postBytes(`${path}?job=${job}`, bytes, contentType, {
+    const sep = path.includes('?') ? '&' : '?'
+    const out = await postBytes(`${path}${sep}job=${job}`, bytes, contentType, {
       signal: pollCtrl.signal,
     })
     if (typeof onProgress === 'function') onProgress({ percent: 100, stage: '转换完成', done: 0, total: 0 })
@@ -121,9 +182,12 @@ async function convertWithProgress(path, bytes, contentType, opts = {}) {
   }
 }
 
-/** PDF 字节 → DOCX 字节（pdf2docx-plus）。opts: { onProgress, signal } */
+/** PDF 字节 → DOCX 字节（pdf2docx-plus，结果按内容 hash 缓存到服务端 cache/）。
+ * opts: { onProgress, signal, noCache }  noCache=true 跳过缓存（如内容已被改动时） */
 export async function pdfToDocxBytes(pdfBytes, opts = {}) {
-  return convertWithProgress('/api/pdf2docx', pdfBytes, 'application/pdf', opts)
+  const cacheKey = opts.noCache ? '' : await sha256Hex(pdfBytes)
+  const path = cacheKey ? `/api/pdf2docx?cache=${cacheKey}` : '/api/pdf2docx'
+  return convertWithProgress(path, pdfBytes, 'application/pdf', opts)
 }
 
 /** DOCX 字节 → PDF 字节（docx2pdf，本机 Word）。opts: { onProgress, signal } */

@@ -19,6 +19,7 @@ export const FILE_TYPES = {
   PDF: 'pdf',
   DOCX: 'docx',
   MARKDOWN: 'markdown',
+  TEXT: 'text',
   PPT: 'ppt',
   EXCEL: 'excel',
   EPUB: 'epub',
@@ -33,7 +34,7 @@ const EXT_TO_TYPE = {
   md: FILE_TYPES.MARKDOWN,
   markdown: FILE_TYPES.MARKDOWN,
   mdx: FILE_TYPES.MARKDOWN,
-  txt: FILE_TYPES.MARKDOWN,
+  txt: FILE_TYPES.TEXT,
   ppt: FILE_TYPES.PPT,
   pptx: FILE_TYPES.PPT,
   xls: FILE_TYPES.EXCEL,
@@ -547,15 +548,184 @@ async function generateEpubZip(zip) {
   })
 }
 
-// ─── excel 表格渲染（SheetJS 只读）──────────────────────────
+// ─── excel 表格（网格编辑器）────────────────────────
 
-/** xlsx → 第一个工作表 HTML 表格 */
-export async function renderExcelHtml(file) {
+/** xlsx → 全部工作表的网格数据（值 + 合并区域） */
+export async function readExcelGrid(file) {
   const data = await file.arrayBuffer()
-  const wb = XLSX.read(data, { type: 'array' })
-  const sheet = wb.Sheets[wb.SheetNames[0]]
-  const html = XLSX.utils.sheet_to_html(sheet, { id: 'sheet-table' })
-  return { html, sheetNames: wb.SheetNames }
+  const wb = XLSX.read(data, { type: 'array', cellDates: true })
+  const sheets = wb.SheetNames.map((name, idx) => {
+    const sheet = wb.Sheets[name]
+    const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null })
+    const values = raw.map((row) => (Array.isArray(row) ? row : []))
+    const merges = (sheet['!merges'] || []).map((m) => ({
+      r1: m.s.r,
+      c1: m.s.c,
+      r2: m.e.r,
+      c2: m.e.c,
+    }))
+    return { name, values, merges, origIndex: idx }
+  })
+  return { sheets }
+}
+
+/**
+ * 把一条编辑操作应用到网格（前端网格/撤销重放/离线回退共用）。
+ * @param {Array<Array>} values 值网格（原地修改）
+ * @param {Array<object>} merges 合并区域 [{r1,c1,r2,c2}]（原地修改）
+ * @param {object} op 操作（与 /api/excel-edit 的 ops 同构）
+ */
+export function applyGridOp(values, merges, op) {
+  const ensure = (r, c) => {
+    while (values.length <= r) values.push([])
+    const row = values[r]
+    while (row.length <= c) row.push(null)
+  }
+  switch (op.op) {
+    case 'set':
+      ensure(op.r, op.c)
+      values[op.r][op.c] = op.v
+      break
+    case 'insertRow': {
+      const w = values.reduce((m, row) => Math.max(m, row.length), 0)
+      values.splice(op.at, 0, new Array(w).fill(null))
+      break
+    }
+    case 'deleteRow':
+      values.splice(op.at, op.amount || 1)
+      break
+    case 'insertCol':
+      for (const row of values) row.splice(op.at, 0, null)
+      break
+    case 'deleteCol':
+      for (const row of values) row.splice(op.at, op.amount || 1)
+      break
+    case 'merge': {
+      const r1 = Math.min(op.r1, op.r2)
+      const r2 = Math.max(op.r1, op.r2)
+      const c1 = Math.min(op.c1, op.c2)
+      const c2 = Math.max(op.c1, op.c2)
+      const hit = merges.find((m) => m.r1 === r1 && m.c1 === c1 && m.r2 === r2 && m.c2 === c2)
+      if (!hit) merges.push({ r1, c1, r2, c2 })
+      break
+    }
+    case 'unmerge': {
+      const r1 = Math.min(op.r1, op.r2)
+      const r2 = Math.max(op.r1, op.r2)
+      const c1 = Math.min(op.c1, op.c2)
+      const c2 = Math.max(op.c1, op.c2)
+      for (let i = merges.length - 1; i >= 0; i--) {
+        const m = merges[i]
+        if (m.r1 === r1 && m.c1 === c1 && m.r2 === r2 && m.c2 === c2) merges.splice(i, 1)
+      }
+      break
+    }
+    default:
+      break
+  }
+  return values
+}
+
+/**
+ * 把网格编辑操作保存回 xlsx/xls 文件：
+ * 1) .xlsx 优先调用本地 Python 转换服务（/api/excel-edit，openpyxl 逐格修改，保留格式/公式/多 sheet）；
+ * 2) 服务不可用 / .xls 老格式（BIFF8）时回退浏览器端 SheetJS（按最终网格重建，仅兜底）。
+ * @param {object} entry - 文件条目（含 id / name / handle）
+ * @param {object} changes - { wbOps: [...], sheets: [{sheetIndex, name, ops, values, merges}] }
+ */
+export async function saveExcelChanges(entry, changes) {
+  const name = entry.name || ''
+  if (/\.xlsx$/i.test(name)) {
+    try {
+      const out = await editExcelWithOpenpyxl(entry, changes)
+      await saveFileBytes(entry, out)
+      return
+    } catch (err) {
+      // 服务不可用/失败 → 回退浏览器端 SheetJS 方案
+      console.warn('openpyxl 编辑失败，回退 SheetJS:', err?.message || err)
+    }
+  }
+
+  // 回退：读原始工作簿，按最终表名/网格重建（丢失样式，仅兜底）
+  const bytes = await readEntryBytes(entry)
+  const wb = XLSX.read(bytes, { type: 'array', cellDates: true })
+  const finalNames = changes.sheets.map((s) => s.name)
+  const wanted = new Set(finalNames)
+  for (const n of wb.SheetNames.slice()) {
+    if (!wanted.has(n)) delete wb.Sheets[n]
+  }
+  wb.SheetNames = finalNames
+  for (const s of changes.sheets) {
+    const sheet = XLSX.utils.aoa_to_sheet(s.values)
+    if (s.merges && s.merges.length) {
+      sheet['!merges'] = s.merges.map((m) => ({ s: { r: m.r1, c: m.c1 }, e: { r: m.r2, c: m.c2 } }))
+    }
+    wb.Sheets[s.name] = sheet
+  }
+  const bookType = /\.xls$/i.test(name) ? 'biff8' : 'xlsx'
+  const out = new Uint8Array(XLSX.write(wb, { type: 'array', bookType }))
+  await saveFileBytes(entry, out)
+}
+
+/** 本地 Python 转换服务地址（可用 VITE_CONVERT_URL 覆盖，与 pdfConvert.js 保持一致） */
+const CONVERT_BASE =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_CONVERT_URL) ||
+  'http://127.0.0.1:5198'
+
+/**
+ * 调用本地转换服务的 /api/excel-edit（openpyxl）：按操作流修改工作表并返回新字节。
+ * 连接失败 / 依赖缺失 / 服务端错误都会抛错，由调用方回退到 SheetJS。
+ */
+async function editExcelWithOpenpyxl(entry, changes) {
+  const bytes = await readEntryBytes(entry)
+  const b64 = await bytesToBase64(bytes)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 60000)
+  let r
+  try {
+    r = await fetch(`${CONVERT_BASE}/api/excel-edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        xlsx: b64,
+        wbOps: changes.wbOps || [],
+        // 只发送有操作的表（含新建表 sheetIndex=-1）；未编辑的表服务端原样保留
+        sheets: (changes.sheets || [])
+          .filter((s) => s.sheetIndex === -1 || (s.ops && s.ops.length))
+          .map((s) => ({ sheetIndex: s.sheetIndex, name: s.name, ops: s.ops })),
+      }),
+      signal: ctrl.signal,
+    })
+  } catch (err) {
+    throw new Error(`无法连接转换服务：${err?.message || err}`)
+  } finally {
+    clearTimeout(timer)
+  }
+  if (!r.ok) {
+    let msg = `转换服务异常 (${r.status})`
+    try {
+      const j = await r.json()
+      if (j && j.error) msg = j.error
+    } catch {
+      // 非 JSON 错误体，保留默认消息
+    }
+    throw new Error(msg)
+  }
+  return new Uint8Array(await r.arrayBuffer())
+}
+
+function bytesToBase64(bytes) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([bytes], { type: 'application/octet-stream' })
+    const fr = new FileReader()
+    fr.onload = () => {
+      const dataUrl = fr.result
+      const idx = dataUrl.indexOf(',')
+      resolve(idx >= 0 ? dataUrl.slice(idx + 1) : '')
+    }
+    fr.onerror = () => reject(new Error('字节转 base64 失败'))
+    fr.readAsDataURL(blob)
+  })
 }
 
 export function emptyAnnotations(fileName = '') {
@@ -803,7 +973,10 @@ export function getRecent() {
 }
 
 export function addRecent(entry) {
-  const list = getRecent().filter((item) => item.id !== entry.id)
+  const list = getRecent()
+    .filter((item) => item.id !== entry.id)
+    // 旧会话归一化：txt 曾被归为 markdown，这里按扩展名修正为纯文本
+    .map((item) => (item.type === FILE_TYPES.MARKDOWN && /\.txt$/i.test(item.name) ? { ...item, type: FILE_TYPES.TEXT } : item))
   const next = [
     {
       id: entry.id,

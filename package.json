@@ -2,14 +2,20 @@
   "name": "note-studio-mvp",
   "private": true,
   "version": "0.1.0",
+  "description": "本地文档转换与 PDF 编辑工具",
+  "author": "Note Studio Contributors",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "convert": "python server/convert_server.py --port 5198"
+    "convert": "python server/convert_server.py --port 5198",
+    "electron:dev": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win portable"
   },
   "dependencies": {
+    "@paddleocr/paddleocr-js": "^0.4.2",
     "docx": "^9.7.1",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.8.0",
@@ -18,10 +24,31 @@
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "vosk-browser": "^0.0.8",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "36.4.0",
+    "electron-builder": "26.0.12",
     "vite": "^6.0.7"
+  },
+  "build": {
+    "appId": "com.notestudio.app",
+    "productName": "Note Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Note-Studio-${version}-Windows.exe"
+    }
   }
 }

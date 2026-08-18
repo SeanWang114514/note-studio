@@ -69,7 +69,54 @@ def _install_safe_get_images():
         return (xref, smask, _int("Width"), _int("Height"), _int("BitsPerComponent"),
                 _str("ColorSpace"), "", name, _str("Filter"), 0)
 
-    def _scan(doc, rsrc_key, out, v_rsrc, v_forms, v_imgs):
+    def _handle_xobj_entries(doc, entries, out, v_rsrc, v_forms, v_imgs, v_dicts=None):
+        for name, x in entries:
+            try:
+                subtype = doc.xref_get_key(x, "Subtype")[1]
+            except Exception:  # noqa: BLE001
+                continue
+            if subtype == "/Image":
+                if x in v_imgs:
+                    continue
+                v_imgs.add(x)
+                out.append(_image_item(doc, x, name))
+            elif subtype == "/Form":
+                if x in v_forms:
+                    continue
+                v_forms.add(x)
+                _scan(doc, doc.xref_get_key(x, "Resources"), out, v_rsrc, v_forms, v_imgs, v_dicts)
+
+    def _inline_xobject_entries(rsrc_dict_str):
+        """从内联 Resources 字典字符串提取 XObject 条目 [(name, xref)]。
+
+        形如 <</Font<</F1 5 0 R/...>>/ExtGState<</...>>/XObject<</Im1 27 0 R/Im2 30 0 R>>/ProcSet[...]>>。
+        只关心 /XObject 之后的字典段；条目都是 /Name N 0 R，无嵌套字典，抓到第一个 >> 即可。
+        """
+        m = re.search(r"/XObject\s*<<", rsrc_dict_str)
+        if not m:
+            return []
+        seg = rsrc_dict_str[m.end():]
+        end = seg.find(">>")
+        if end >= 0:
+            seg = seg[:end]
+        return [(mm.group(1), int(mm.group(2)))
+                for mm in re.finditer(r"/([A-Za-z0-9._-]+)\s+(\d+)\s+0\s+R", seg)]
+
+    def _scan(doc, rsrc_key, out, v_rsrc, v_forms, v_imgs, v_dicts=None):
+        if rsrc_key[0] == "dict":
+            # 页面/Form 的 Resources 直接以内联字典形式写在对象里（无独立 xref）：
+            # 从字典字符串解析 XObject 条目，再走统一的 Subtype 分发。
+            # 注意：不同对象可能共享同一份内联 Resources 字典（LaTeX 公式页常见），
+            # 必须以字典内容去重，否则每个引用它的 Form 都会重新解析一遍 → 条目爆炸。
+            if v_dicts is None:
+                v_dicts = set()
+            key = rsrc_key[1]
+            if key in v_dicts:
+                return
+            v_dicts.add(key)
+            _handle_xobj_entries(doc, _inline_xobject_entries(key),
+                                 out, v_rsrc, v_forms, v_imgs, v_dicts)
+            return
         rx = _to_xref(rsrc_key)
         if rx is None or rx in v_rsrc:
             return
@@ -91,21 +138,7 @@ def _install_safe_get_images():
             # 内联 XObject 字典（极少见）：正则抓 /Name N 0 R
             for m in re.finditer(r"/([A-Za-z0-9._-]+)\s+(\d+)\s+0\s+R", xobj_key[1]):
                 entries.append((m.group(1), int(m.group(2))))
-        for name, x in entries:
-            try:
-                subtype = doc.xref_get_key(x, "Subtype")[1]
-            except Exception:  # noqa: BLE001
-                continue
-            if subtype == "/Image":
-                if x in v_imgs:
-                    continue
-                v_imgs.add(x)
-                out.append(_image_item(doc, x, name))
-            elif subtype == "/Form":
-                if x in v_forms:
-                    continue
-                v_forms.add(x)
-                _scan(doc, doc.xref_get_key(x, "Resources"), out, v_rsrc, v_forms, v_imgs)
+        _handle_xobj_entries(doc, entries, out, v_rsrc, v_forms, v_imgs, v_dicts)
 
     def _page_resources_inherit(doc, page_xref):
         seen = set()
@@ -124,15 +157,35 @@ def _install_safe_get_images():
         doc = self.parent
         if doc is None or getattr(doc, "is_closed", False):
             return _orig(self, full=True, **kwargs)
+        # 缓存：pdf2docx 的 hide_images 会对页面上每个 content stream / XObject
+        # 调用一次 get_images(full=True)（attention 论文页 13 有 615 个 Form XObject，
+        # 每次全量重扫 615 条 → 累计 37 万次 xref 序列化 → 挂起）。
+        # 同一文档结构（xref 数量指纹相同）+ 同一页面时结果稳定，直接复用。
+        # hide_images 只改 content stream 不改 Resources/XObject 树，缓存安全。
+        try:
+            cache = getattr(doc, "_nf_img_cache", None)
+            if cache is None:
+                cache = doc._nf_img_cache = {}
+            key = (self.number, doc.xref_length())
+            hit = cache.get(key)
+            if hit is not None:
+                return hit
+        except Exception:  # noqa: BLE001
+            cache = None
         try:
             rsrc = _page_resources_inherit(doc, doc.page_xref(self.number))
         except Exception:  # noqa: BLE001
             return _orig(self, full=True, **kwargs)
         out = []
         try:
-            _scan(doc, rsrc, out, set(), set(), set())
+            _scan(doc, rsrc, out, set(), set(), set(), set())
         except Exception:  # noqa: BLE001
             return _orig(self, full=True, **kwargs)
+        if cache is not None:
+            try:
+                cache[key] = list(out)  # 浅拷贝，防调用方原地改列表污染缓存
+            except Exception:  # noqa: BLE001
+                pass
         return out
 
     _fitz.Page.get_images = _safe_get_images

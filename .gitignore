@@ -15,3 +15,10 @@ __pycache__/
 # 开发参考材料（第三方项目源码与研究文件，非本仓库依赖）
 vendor/
 vendor-study/
+
+# Electron packaging output
+release/
+*.exe
+cache/
+dom_*.txt
+*.log

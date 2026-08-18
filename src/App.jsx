@@ -1,6 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   BookOpen,
+  Delete,
   ExternalLink,
   File as FileIcon,
   FileCode2,
@@ -10,23 +15,36 @@ import {
   FileWarning,
   Highlighter,
   Home,
+  Merge,
+  Circle,
+  Eraser,
+  Minus,
+  Square,
+  Mic,
   MessageSquareText,
   MousePointer2,
   Pencil,
   PenLine,
+  Plus,
   Presentation,
+  Redo2,
   Save,
+  ScanText,
+  SlidersHorizontal,
   TextCursor,
   Trash2,
   Type,
   Undo2,
+  Settings,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
 import {
   addRecent,
+  applyGridOp,
   buildDocxFromHtml,
+  detectType,
   ensurePermission,
   FILE_TYPES,
   formatBytes,
@@ -39,18 +57,25 @@ import {
   putFileHandle,
   readEpubBook,
   readEpubHtml,
+  readExcelGrid,
   readText,
   resolveZipPath,
   renderDocxHtml,
-  renderExcelHtml,
   renderMarkdownHtml,
   renderPdfPage,
   saveAnnotations,
   saveEpubBook,
   saveEpubFromHtml,
+  saveExcelChanges,
   saveFileBytes,
   saveTextFile,
 } from './lib/FileProcessor.js'
+import OcrModal from './components/OcrModal.jsx'
+import SpeechModal from './components/SpeechModal.jsx'
+import ModelSettingsModal from './components/ModelSettingsModal.jsx'
+import SettingsModal from './components/SettingsModal.jsx'
+import { fetchModelStatus, hasPromptedDownload } from './lib/modelManager.js'
+import { captureEditableSelection, captureTextareaSelection, insertAtRange } from './lib/caretInsert.js'
 import { extractPdfMarkdown } from './lib/pdf/pdfTextExtract.js'
 import { docxToPdfBytes, pdfToDocxBytes } from './lib/pdf/pdfConvert.js'
 const uid = () =>
@@ -62,6 +87,7 @@ const TYPE_META = {
   pdf: { label: 'PDF 文档', icon: FileText, color: '#e5484d' },
   docx: { label: 'Word 文档', icon: FileText, color: '#2563eb' },
   markdown: { label: 'Markdown', icon: FileCode2, color: '#0d9488' },
+  text: { label: '纯文本', icon: TextCursor, color: '#6b7280' },
   ppt: { label: 'PPT 演示', icon: Presentation, color: '#ea580c' },
   excel: { label: 'Excel 表格', icon: FileSpreadsheet, color: '#16a34a' },
   epub: { label: 'EPUB 电子书', icon: BookOpen, color: '#7c3aed' },
@@ -70,10 +96,10 @@ const TYPE_META = {
 }
 
 const PEN_PRESETS = [
-  { type: 'brush', label: '画笔' },
-  { type: 'line', label: '直线' },
-  { type: 'rect', label: '矩形' },
-  { type: 'ellipse', label: '圆形' },
+  { type: 'brush', label: '画笔', icon: Pencil },
+  { type: 'line', label: '直线', icon: Minus },
+  { type: 'rect', label: '矩形', icon: Square },
+  { type: 'ellipse', label: '圆形', icon: Circle },
 ]
 
 const PEN_COLORS = ['#e5484d', '#1f1f1f', '#2383e2', '#2f9e44', '#f5c518']
@@ -218,7 +244,7 @@ function distToSegment(px, py, x1, y1, x2, y2) {
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 }
 
-function hitTestAnnotation(a, px, py, w, h) {
+function hitTestAnnotation(a, px, py, w, h, extraTolerance = 0) {
   if (a.type === 'line') {
     return (
       distToSegment(px, py, (a.x0 ?? 0) * w, (a.y0 ?? 0) * h, (a.x1 ?? 0) * w, (a.y1 ?? 0) * h) <= 10
@@ -263,12 +289,72 @@ function hitTestAnnotation(a, px, py, w, h) {
           a.points[i - 1].y * h,
           a.points[i].x * w,
           a.points[i].y * h,
-        ) <= 12
+        ) <= 12 + extraTolerance
       )
         return true
     }
   }
   return false
+}
+
+function eraseStrokeAtPoint(a, px, py, w, h, radius) {
+  if (!(a.type === 'brush' || a.type === 'highlighter') || !a.points || a.points.length < 2) return [a]
+  const thickness = Math.max(1, Number(a.thickness) || 3) / 2
+  const pieces = []
+  let current = []
+  let erased = false
+  const flush = () => {
+    if (current.length >= 2) pieces.push(current)
+    current = []
+  }
+  for (let i = 1; i < a.points.length; i++) {
+    const p0 = a.points[i - 1]
+    const p1 = a.points[i]
+    const x0 = p0.x * w
+    const y0 = p0.y * h
+    const x1 = p1.x * w
+    const y1 = p1.y * h
+    const distance = Math.hypot(x1 - x0, y1 - y0)
+    const steps = Math.max(1, Math.ceil(distance / 4))
+    for (let step = 0; step <= steps; step++) {
+      if (i > 1 && step === 0) continue
+      const t = step / steps
+      const point = { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t }
+      const d = Math.hypot(point.x * w - px, point.y * h - py)
+      if (d <= radius + thickness) {
+        erased = true
+        flush()
+      } else {
+        current.push(point)
+      }
+    }
+  }
+  flush()
+  if (!erased) return [a]
+  return pieces.map((points) => ({ ...a, id: uid(), points }))
+}
+
+function eraseAnnotationsAtPoint(list, point, w, h, mode, size) {
+  const px = point.x * w
+  const py = point.y * h
+  const radius = Math.max(2, Number(size) || 16)
+  let changed = false
+  const next = []
+  for (const a of list) {
+    if (!(a.type === 'brush' || a.type === 'highlighter')) {
+      next.push(a)
+      continue
+    }
+    if (mode === 'stroke') {
+      if (hitTestAnnotation(a, px, py, w, h, radius)) changed = true
+      else next.push(a)
+      continue
+    }
+    const pieces = eraseStrokeAtPoint(a, px, py, w, h, radius)
+    if (pieces.length !== 1 || pieces[0] !== a) changed = true
+    next.push(...pieces)
+  }
+  return { list: changed ? next : list, changed }
 }
 
 function textToBlocks(md) {
@@ -474,12 +560,31 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState('home')
   const [toast, setToast] = useState(null)
   const [picking, setPicking] = useState(false)
+  const [modelModalOpen, setModelModalOpen] = useState(false) // 首次打开：量化模型下载提示
   const toastTimer = useRef(null)
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const notify = useCallback((message, type = 'info') => {
     setToast({ message, type })
     clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(null), 3200)
+  }, [])
+
+  // 首次打开：若本地有未下载的量化模型（GGUF / MLX）且未提示过，弹出下载提示
+  useEffect(() => {
+    if (hasPromptedDownload()) return
+    let cancelled = false
+    fetchModelStatus()
+      .then((status) => {
+        if (cancelled) return
+        const missing = (status.models || []).filter((m) => !m.downloaded)
+        if (missing.length > 0) setModelModalOpen(true)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const addTab = useCallback((entry) => {
@@ -531,7 +636,8 @@ export default function App() {
           return
         }
         const file = await handle.getFile()
-        const entry = { ...item, file, handle }
+        // 用扩展名重新检测类型：旧会话中 txt 曾被归为 markdown，此处修正为纯文本
+        const entry = { ...item, type: detectType(item.name), file, handle }
         await putFileHandle(entry)
         setRecent(addRecent(entry))
         addTab(entry)
@@ -581,6 +687,22 @@ export default function App() {
             <span>欢迎页</span>
           </button>
         </nav>
+        <button
+          className="nav-item"
+          onClick={() => setModelSettingsOpen(true)}
+          title="模型管理：下载/删除 Vosk、GGUF、MLX 语音模型"
+        >
+          <Settings size={16} />
+          <span>模型设置</span>
+        </button>
+        <button
+          className="nav-item"
+          onClick={() => setSettingsOpen(true)}
+          title="设置：语音/手写识别模型切换、转换缓存管理"
+        >
+          <SlidersHorizontal size={16} />
+          <span>设置</span>
+        </button>
         <div className="tree-title">最近打开</div>
         <div className="tree-scroll">
           {recent.length === 0 ? (
@@ -609,6 +731,15 @@ export default function App() {
           )}
         </div>
       </main>
+      <ModelSettingsModal
+        open={modelModalOpen || modelSettingsOpen}
+        initialPrompt={modelModalOpen}
+        onClose={() => {
+          setModelModalOpen(false)
+          setModelSettingsOpen(false)
+        }}
+      />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} notify={notify} />
       <StatusToast toast={toast} />
     </div>
   )
@@ -648,11 +779,33 @@ function TabBar({ tabs, activeId, onSelect, onClose }) {
 }
 
 function HomeView({ recent, onOpenRecent, onPickFiles }) {
+  const [ocrOpen, setOcrOpen] = useState(false)
+  const [speechOpen, setSpeechOpen] = useState(false)
   return (
     <div className="home">
-      <header className="home-header">
-        <h1>欢迎页</h1>
-        <p>最近打开的 5 个文件，点击即可打开</p>
+      <header className="home-header home-header-row">
+        <div>
+          <h1>欢迎页</h1>
+          <p>最近打开的 5 个文件，点击即可打开</p>
+        </div>
+        <div className="home-header-actions">
+          <button
+            className="tool-btn ocr-btn"
+            title="语音识别（Vosk 本地 / Qwen3-ASR 本地服务），识别文字可复制或插入文档"
+            onClick={() => setSpeechOpen(true)}
+          >
+            <Mic size={15} />
+            语音识别
+          </button>
+          <button
+            className="tool-btn ocr-btn"
+            title="打开手写画板 / 图片文字识别（本地 PaddleOCR 推理）"
+            onClick={() => setOcrOpen(true)}
+          >
+            <ScanText size={15} />
+            文字识别
+          </button>
+        </div>
       </header>
       {recent.length === 0 ? (
         <div className="home-empty">
@@ -673,6 +826,8 @@ function HomeView({ recent, onOpenRecent, onPickFiles }) {
       <div className="home-hint">
         最近文件可跨会话重新打开；批注 JSON 会在首次保存时选择保存位置。
       </div>
+      <OcrModal open={ocrOpen} onClose={() => setOcrOpen(false)} />
+      <SpeechModal open={speechOpen} onClose={() => setSpeechOpen(false)} />
     </div>
   )
 }
@@ -754,6 +909,9 @@ function FileView({ entry, notify }) {
   if (entry.type === FILE_TYPES.MARKDOWN) {
     return <MarkdownView entry={entry} notify={notify} />
   }
+  if (entry.type === FILE_TYPES.TEXT) {
+    return <TextView entry={entry} notify={notify} />
+  }
   if (entry.type === FILE_TYPES.EXCEL) {
     return <ExcelView entry={entry} notify={notify} />
   }
@@ -766,7 +924,7 @@ function FileView({ entry, notify }) {
   return <OfficeView entry={entry} notify={notify} />
 }
 
-function ToolButton({ active, title, icon: Icon, color, onClick, onDoubleClick, btnRef }) {
+function ToolButton({ active, title, icon: Icon, color, onClick, onDoubleClick, btnRef, disabled }) {
   return (
     <button
       ref={btnRef}
@@ -774,6 +932,7 @@ function ToolButton({ active, title, icon: Icon, color, onClick, onDoubleClick, 
       title={title}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      disabled={disabled}
     >
       <Icon size={16} style={color ? { color } : undefined} />
     </button>
@@ -1272,6 +1431,44 @@ function PdfDocxEditor({ entry, docxFile, notify }) {
   const docRef = useRef(null)
   const tools = useAnnotTools({ annKey: 'pdf', entry, notify })
   const smoothSavePct = useSmoothProgress(saveProgress?.percent)
+  // OCR 插入：进入编辑模式并记录光标位置
+  const ocrRangeRef = useRef(null)
+  const enterOcrEdit = useCallback(() => {
+    const doc = docRef.current
+    if (doc) ocrRangeRef.current = captureEditableSelection(doc)
+    setEditing(true)
+    requestAnimationFrame(() => {
+      const el = docRef.current
+      if (!el) return
+      el.focus()
+      const range = ocrRangeRef.current?.range
+      if (range) {
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+    })
+  }, [])
+  const insertOcrText = useCallback(
+    (text) => {
+      const doc = docRef.current
+      if (!doc) return false
+      const sel = window.getSelection()
+      let range = ocrRangeRef.current?.range
+      if (!range) {
+        range = document.createRange()
+        range.selectNodeContents(doc)
+        range.collapse(false)
+      }
+      sel.removeAllRanges()
+      sel.addRange(range)
+      const ok = insertAtRange(range, text)
+      ocrRangeRef.current = null
+      doc.focus()
+      return ok
+    },
+    [],
+  )
   const handleDocClick = useDocLinkGuard(docRef, notify)
 
   // 打开：mammoth 渲染转换得到的 docx
@@ -1302,8 +1499,13 @@ function PdfDocxEditor({ entry, docxFile, notify }) {
     if (!ready || !docRef.current) return
     docRef.current.innerHTML = html
     applyDocxHighlights(docRef.current, highlights)
+  }, [ready, html, highlights])
+
+  // 单独切换编辑态：不重建 DOM，避免 OCR 插入时已保存的光标位置失效
+  useEffect(() => {
+    if (!ready || !docRef.current) return
     docRef.current.contentEditable = editing ? 'true' : 'false'
-  }, [ready, html, highlights, editing])
+  }, [ready, editing])
 
   // 选中高亮文字 → “高亮选中文字”按钮呈选中态；未选中高亮 → 取消选中态
   useEffect(() => {
@@ -1412,7 +1614,7 @@ function PdfDocxEditor({ entry, docxFile, notify }) {
 
   return (
     <div className="doc-view">
-      <AnnotToolbar t={tools} extra={extraToolbar} />
+      <AnnotToolbar t={tools} extra={extraToolbar} onOcrOpen={enterOcrEdit} onOcrInsert={insertOcrText} />
       {contentSaving && (
         <div className="convert-progress-row">
           <ConversionProgress
@@ -1541,6 +1743,8 @@ function useAnnotTools({ annKey, entry, notify }) {
   const [penOpen, setPenOpen] = useState(false)
   const [highlighter, setHighlighter] = useState({ color: '#f5c518', size: 5 })
   const [highlighterOpen, setHighlighterOpen] = useState(false)
+  const [eraser, setEraser] = useState({ type: 'pixel', size: 16 })
+  const [eraserOpen, setEraserOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [needsSaveFile, setNeedsSaveFile] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -1548,10 +1752,19 @@ function useAnnotTools({ annKey, entry, notify }) {
   const [textDraft, setTextDraft] = useState(null)
   const [draftFits, setDraftFits] = useState(false)
   const [shapeDraft, setShapeDraft] = useState(null)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
 
   const overlayRef = useRef(null)
   const annRef = useRef(ANN_EMPTY)
+  const undoStackRef = useRef([]) // 撤销栈：保存历史列表快照
+  const redoStackRef = useRef([]) // 重做栈：保存被撤销的列表快照
   const drawingRef = useRef(null)
+  const eraserSessionRef = useRef(null)
+  const eraserFrameRef = useRef(null)
+  const eraserPendingPointRef = useRef(null)
+  const eraserCursorRef = useRef(null)
+  const drawFrameRef = useRef(null)
   const textDragRef = useRef(null)
   const cancelEditRef = useRef(false)
   const saveTimer = useRef(null)
@@ -1567,6 +1780,10 @@ function useAnnotTools({ annKey, entry, notify }) {
         const ann = await loadAnnotations(entry)
         if (cancelled) return
         annRef.current = { ...ANN_EMPTY, ...ann }
+        undoStackRef.current = []
+        redoStackRef.current = []
+        setCanUndo(false)
+        setCanRedo(false)
         setAnnotations(annRef.current)
       } catch (err) {
         if (!cancelled) notify(`批注加载失败：${err.message}`, 'error')
@@ -1595,7 +1812,19 @@ function useAnnotTools({ annKey, entry, notify }) {
         drawShapeSelection(ctx, a, rect.width, rect.height)
       }
     }
-    if (drawingRef.current) {
+    if (drawingRef.current?.type === 'eraser' && drawingRef.current.point) {
+      const p = drawingRef.current.point
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(p.x * rect.width, p.y * rect.height, Math.max(2, drawingRef.current.size || 16), 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.22)'
+      ctx.fill()
+      ctx.strokeStyle = '#2383e2'
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([4, 3])
+      ctx.stroke()
+      ctx.restore()
+    } else if (drawingRef.current) {
       drawAnnotation(ctx, drawingRef.current, rect.width, rect.height, true)
     }
   }, [annKey, selectedId])
@@ -1607,10 +1836,38 @@ function useAnnotTools({ annKey, entry, notify }) {
   const getPoint = useCallback((e) => {
     const el = overlayRef.current
     if (!el) return { x: 0, y: 0 }
-    const rect = el.getBoundingClientRect()
+    if (e.currentTarget === el && Number.isFinite(e.offsetX) && Number.isFinite(e.offsetY)) {
+      const width = el.clientWidth || 1
+      const height = el.clientHeight || 1
+      return { x: e.offsetX / width, y: e.offsetY / height }
+    }
+    const rect = e.currentTarget?.getBoundingClientRect?.() || el.getBoundingClientRect()
     if (!rect.width || !rect.height) return { x: 0, y: 0 }
     return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height }
   }, [])
+
+  const scheduleDrawFrame = useCallback(() => {
+    if (drawFrameRef.current) return
+    drawFrameRef.current = requestAnimationFrame(() => {
+      drawFrameRef.current = null
+      const d = drawingRef.current
+      if (d && d.type !== 'brush' && d.type !== 'highlighter' && d.type !== 'eraser') {
+        const width = d.canvasWidth || overlayRef.current?.clientWidth || 0
+        const height = d.canvasHeight || overlayRef.current?.clientHeight || 0
+        const dxPx = Math.abs(d.end.x - d.start.x) * width
+        const dyPx = Math.abs(d.end.y - d.start.y) * height
+        setShapeDraft({
+          x0: d.start.x,
+          y0: d.start.y,
+          x1: d.end.x,
+          y1: d.end.y,
+          label: (PEN_PRESETS.find((p) => p.type === d.type) || {}).label || d.type,
+          sizeText: d.type === 'line' ? `${Math.round(Math.hypot(dxPx, dyPx))}px` : `${Math.round(dxPx)}×${Math.round(dyPx)}px`,
+        })
+      }
+      paint()
+    })
+  }, [paint])
 
   const scheduleSave = useCallback(() => {
     clearTimeout(saveTimer.current)
@@ -1628,6 +1885,23 @@ function useAnnotTools({ annKey, entry, notify }) {
   }, [entry, notify])
 
   const commit = useCallback(
+    (newList, historyBase = null) => {
+      // 记录撤销历史（最多保留 100 步），新操作清空重做栈
+      const cur = historyBase ?? annRef.current[annKey] ?? []
+      undoStackRef.current.push(cur)
+      if (undoStackRef.current.length > 100) undoStackRef.current.shift()
+      redoStackRef.current = []
+      setCanUndo(true)
+      setCanRedo(false)
+      annRef.current = { ...annRef.current, [annKey]: newList }
+      setAnnotations(annRef.current)
+      scheduleSave()
+    },
+    [annKey, scheduleSave],
+  )
+
+  // 直接应用列表（不记录历史），供 undo/redo 回放用
+  const applyList = useCallback(
     (newList) => {
       annRef.current = { ...annRef.current, [annKey]: newList }
       setAnnotations(annRef.current)
@@ -1635,6 +1909,38 @@ function useAnnotTools({ annKey, entry, notify }) {
     },
     [annKey, scheduleSave],
   )
+
+  const undo = useCallback(() => {
+    const prev = undoStackRef.current.pop()
+    if (prev === undefined) {
+      notify('没有可撤销的操作', 'info')
+      return
+    }
+    const cur = annRef.current[annKey] || []
+    redoStackRef.current.push(cur)
+    if (redoStackRef.current.length > 100) redoStackRef.current.shift()
+    setCanRedo(true)
+    setCanUndo(undoStackRef.current.length > 0)
+    applyList(prev)
+    setSelectedId(null)
+    setEditingId(null)
+  }, [annKey, applyList, notify])
+
+  const redo = useCallback(() => {
+    const next = redoStackRef.current.pop()
+    if (next === undefined) {
+      notify('没有可重做的操作', 'info')
+      return
+    }
+    const cur = annRef.current[annKey] || []
+    undoStackRef.current.push(cur)
+    if (undoStackRef.current.length > 100) undoStackRef.current.shift()
+    setCanUndo(true)
+    setCanRedo(redoStackRef.current.length > 0)
+    applyList(next)
+    setSelectedId(null)
+    setEditingId(null)
+  }, [annKey, applyList, notify])
 
   const updateAnn = useCallback(
     (id, patch) => {
@@ -1651,12 +1957,6 @@ function useAnnotTools({ annKey, entry, notify }) {
     },
     [commit, annKey],
   )
-
-  const undo = useCallback(() => {
-    const cur = annRef.current[annKey] || []
-    if (!cur.length) return
-    commit(cur.slice(0, -1))
-  }, [commit, annKey])
 
   const clearAll = useCallback(() => {
     if (!(annRef.current[annKey] || []).length) return
@@ -1687,6 +1987,29 @@ function useAnnotTools({ annKey, entry, notify }) {
   // 画布绘制（画笔/荧光笔/选择批注）
   const handleOverlayDown = useCallback(
     (e) => {
+      if (tool === 'eraser') {
+        const point = getPoint(e)
+        const el = overlayRef.current
+        const rect = el?.getBoundingClientRect()
+        if (!rect) return
+        e.currentTarget.setPointerCapture(e.pointerId)
+        eraserSessionRef.current = { before: annRef.current[annKey] || [], changed: false }
+        drawingRef.current = { type: 'eraser', point, size: eraser.size }
+        if (eraserCursorRef.current) {
+          eraserCursorRef.current.style.left = `${point.x * 100}%`
+          eraserCursorRef.current.style.top = `${point.y * 100}%`
+          eraserCursorRef.current.style.width = `${eraser.size}px`
+          eraserCursorRef.current.style.height = `${eraser.size}px`
+          eraserCursorRef.current.style.opacity = '1'
+        }
+        const result = eraseAnnotationsAtPoint(annRef.current[annKey] || [], point, rect.width, rect.height, eraser.type, eraser.size)
+        if (result.changed) {
+          eraserSessionRef.current.changed = true
+          annRef.current = { ...annRef.current, [annKey]: result.list }
+          setAnnotations(annRef.current)
+        }
+        return
+      }
       if (tool === 'selectAnnot') {
         const point = getPoint(e)
         const el = overlayRef.current
@@ -1714,22 +2037,67 @@ function useAnnotTools({ annKey, entry, notify }) {
           ? { type: 'highlighter', color: highlighter.color, thickness: highlighter.size }
           : { type: pen.type, color: pen.color, thickness: pen.size }
       const point = getPoint(e)
+      const canvasRect = e.currentTarget.getBoundingClientRect()
       e.currentTarget.setPointerCapture(e.pointerId)
-      drawingRef.current = { ...meta, start: point, end: point, points: [point] }
+      drawingRef.current = {
+        ...meta,
+        start: point,
+        end: point,
+        points: [point],
+        canvasWidth: canvasRect.width,
+        canvasHeight: canvasRect.height,
+        aspect: canvasRect.width && canvasRect.height ? canvasRect.width / canvasRect.height : 1,
+      }
       if (tool === 'pen') {
         const label = (PEN_PRESETS.find((p) => p.type === meta.type) || {}).label || meta.type
         setShapeDraft({ x0: point.x, y0: point.y, x1: point.x, y1: point.y, label, sizeText: '' })
       }
       paint()
     },
-    [tool, pen, highlighter, getPoint, annKey, paint],
+    [tool, pen, highlighter, eraser, getPoint, annKey, paint],
   )
 
   const handleOverlayMove = useCallback(
     (e) => {
       const d = drawingRef.current
-      if (!d) return
       const point = getPoint(e)
+      if (!d) {
+        if (tool === 'eraser' && eraserCursorRef.current) {
+          eraserCursorRef.current.style.left = `${point.x * 100}%`
+          eraserCursorRef.current.style.top = `${point.y * 100}%`
+          eraserCursorRef.current.style.width = `${eraser.size}px`
+          eraserCursorRef.current.style.height = `${eraser.size}px`
+          eraserCursorRef.current.style.opacity = '1'
+        }
+        return
+      }
+      if (d.type === 'eraser') {
+        d.point = point
+        eraserPendingPointRef.current = point
+        if (eraserCursorRef.current) {
+          eraserCursorRef.current.style.left = `${point.x * 100}%`
+          eraserCursorRef.current.style.top = `${point.y * 100}%`
+          eraserCursorRef.current.style.width = `${eraser.size}px`
+          eraserCursorRef.current.style.height = `${eraser.size}px`
+          eraserCursorRef.current.style.opacity = '1'
+        }
+        if (!eraserFrameRef.current) {
+          eraserFrameRef.current = requestAnimationFrame(() => {
+            eraserFrameRef.current = null
+            const next = eraserPendingPointRef.current
+            eraserPendingPointRef.current = null
+            const rect = overlayRef.current?.getBoundingClientRect()
+            if (!next || !rect || !drawingRef.current || drawingRef.current.type !== 'eraser') return
+            const result = eraseAnnotationsAtPoint(annRef.current[annKey] || [], next, rect.width, rect.height, eraser.type, eraser.size)
+            if (result.changed) {
+              eraserSessionRef.current.changed = true
+              annRef.current = { ...annRef.current, [annKey]: result.list }
+              setAnnotations(annRef.current)
+            }
+          })
+        }
+        return
+      }
       if (d.type === 'brush' || d.type === 'highlighter') {
         const last = d.points[d.points.length - 1]
         if (Math.abs(point.x - last.x) > 0.002 || Math.abs(point.y - last.y) > 0.002) {
@@ -1738,34 +2106,46 @@ function useAnnotTools({ annKey, entry, notify }) {
       } else if (d.type === 'line') {
         d.end = e.shiftKey ? snapPoint(point, d.start) : point
       } else if (d.type === 'rect' || d.type === 'ellipse') {
-        const r = e.currentTarget.getBoundingClientRect()
-        const aspect = r.width && r.height ? r.width / r.height : 1
-        d.end = e.shiftKey ? constrainCircle(point, d.start, aspect) : point
+        d.end = e.shiftKey ? constrainCircle(point, d.start, d.aspect || 1) : point
       }
-      if (d.type !== 'highlighter') {
-        const ovRect = overlayRef.current?.getBoundingClientRect()
-        const dxPx = Math.abs(d.end.x - d.start.x) * (ovRect?.width || 0)
-        const dyPx = Math.abs(d.end.y - d.start.y) * (ovRect?.height || 0)
-        setShapeDraft({
-          x0: d.start.x,
-          y0: d.start.y,
-          x1: d.end.x,
-          y1: d.end.y,
-          label: (PEN_PRESETS.find((p) => p.type === d.type) || {}).label || d.type,
-          sizeText:
-            d.type === 'line'
-              ? `${Math.round(Math.hypot(dxPx, dyPx))}px`
-              : `${Math.round(dxPx)}×${Math.round(dyPx)}px`,
-        })
-      }
-      paint()
+      scheduleDrawFrame()
     },
-    [getPoint, paint],
+    [getPoint, paint, scheduleDrawFrame, annKey, eraser, tool],
   )
+
+  const handleOverlayLeave = useCallback(() => {
+    if (!drawingRef.current && eraserCursorRef.current) {
+      eraserCursorRef.current.style.opacity = '0'
+    }
+  }, [])
 
   const handleOverlayUp = useCallback(() => {
     const d = drawingRef.current
     if (!d) return
+    if (d.type === 'eraser') {
+      const pending = eraserPendingPointRef.current
+      const rect = overlayRef.current?.getBoundingClientRect()
+      if (pending && rect) {
+        const result = eraseAnnotationsAtPoint(annRef.current[annKey] || [], pending, rect.width, rect.height, eraser.type, eraser.size)
+        if (result.changed) {
+          eraserSessionRef.current.changed = true
+          annRef.current = { ...annRef.current, [annKey]: result.list }
+          setAnnotations(annRef.current)
+        }
+      }
+      const session = eraserSessionRef.current
+      if (session?.changed) commit(annRef.current[annKey] || [], session.before)
+      drawingRef.current = null
+      eraserSessionRef.current = null
+      eraserPendingPointRef.current = null
+      if (eraserFrameRef.current) {
+        cancelAnimationFrame(eraserFrameRef.current)
+        eraserFrameRef.current = null
+      }
+      if (eraserCursorRef.current) eraserCursorRef.current.style.opacity = '0'
+      paint()
+      return
+    }
     const base = { id: uid(), color: d.color, thickness: d.thickness }
     const ann =
       d.type === 'brush' || d.type === 'highlighter'
@@ -1774,7 +2154,7 @@ function useAnnotTools({ annKey, entry, notify }) {
     commit([...(annRef.current[annKey] || []), ann])
     drawingRef.current = null
     setShapeDraft(null)
-  }, [commit, annKey])
+  }, [commit, annKey, paint, eraser])
 
   // DOM 批注（文本框/批注标记）
   const handleDomDown = useCallback(
@@ -1894,6 +2274,26 @@ function useAnnotTools({ annKey, entry, notify }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedId, deleteAnn])
 
+  // Ctrl+Z 撤销 / Ctrl+Y、Ctrl+Shift+Z 重做（批注层快捷键）
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = e.target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return
+      if (!(e.ctrlKey || e.metaKey)) return
+      const k = e.key.toLowerCase()
+      if (k === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
+      } else if (k === 'y') {
+        e.preventDefault()
+        redo()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undo, redo])
+
   return {
     annotations,
     list,
@@ -1909,6 +2309,10 @@ function useAnnotTools({ annKey, entry, notify }) {
     setHighlighter,
     highlighterOpen,
     setHighlighterOpen,
+    eraser,
+    setEraser,
+    eraserOpen,
+    setEraserOpen,
     saving,
     needsSaveFile,
     editingId,
@@ -1919,8 +2323,12 @@ function useAnnotTools({ annKey, entry, notify }) {
     draftFits,
     shapeDraft,
     overlayRef,
+    eraserCursorRef,
     draftRef,
     undo,
+    redo,
+    canUndo,
+    canRedo,
     clearAll,
     saveNow,
     commitText,
@@ -1930,6 +2338,7 @@ function useAnnotTools({ annKey, entry, notify }) {
     selectComment,
     handleOverlayDown,
     handleOverlayMove,
+    handleOverlayLeave,
     handleOverlayUp,
     handleDomDown,
     handleDomMove,
@@ -1940,16 +2349,18 @@ function useAnnotTools({ annKey, entry, notify }) {
 /** 批注覆盖层：画布 + DOM 批注（文本框/批注标记/草稿），放在内容容器上方 */
 function AnnotOverlay({ t }) {
   // 画布只在「画笔/荧光笔/选择批注」时接收事件；默认「选择文字」模式不拦截，文字可选中
-  const canvasActive = t.tool === 'pen' || t.tool === 'highlighter' || t.tool === 'selectAnnot'
+  const canvasActive = t.tool === 'pen' || t.tool === 'highlighter' || t.tool === 'eraser' || t.tool === 'selectAnnot'
   const domActive = t.tool === 'text' || t.tool === 'comment'
   return (
     <>
+      <div ref={t.eraserCursorRef} className="eraser-cursor-preview" aria-hidden="true" />
       <canvas
         ref={t.overlayRef}
-        className={`annot-canvas ${t.tool === 'select' ? 'select-mode' : ''}`}
+        className={`annot-canvas ${t.tool === 'select' ? 'select-mode' : ''} ${t.tool === 'eraser' ? 'eraser-mode' : ''}`}
         style={{ pointerEvents: canvasActive ? 'auto' : 'none' }}
         onPointerDown={canvasActive ? t.handleOverlayDown : undefined}
         onPointerMove={canvasActive ? t.handleOverlayMove : undefined}
+        onPointerLeave={canvasActive ? t.handleOverlayLeave : undefined}
         onPointerUp={canvasActive ? t.handleOverlayUp : undefined}
       />
       <div
@@ -2021,13 +2432,17 @@ function AnnotOverlay({ t }) {
 }
 
 /** 批注工具栏：工具按钮 + 画笔/荧光笔设置 + 撤销/清除/保存 + 显示大小 */
-function AnnotToolbar({ t, extra }) {
+function AnnotToolbar({ t, extra, onOcrOpen, onOcrInsert }) {
   const penRef = useRef(null)
   const hlRef = useRef(null)
+  const eraserRef = useRef(null)
   const tbRef = useRef(null)
   const [penLeft, setPenLeft] = useState(0)
   const [hlLeft, setHlLeft] = useState(0)
+  const [eraserLeft, setEraserLeft] = useState(0)
   const [zoom, setZoom] = useState(100)
+  const [ocrOpen, setOcrOpen] = useState(false)
+  const [speechOpen, setSpeechOpen] = useState(false)
 
   // 显示大小：把 zoom 写到所在 .doc-view 的 CSS 变量，内容纸张（.docx-doc/.md-body/.epub-body）统一缩放
   useEffect(() => {
@@ -2051,6 +2466,10 @@ function AnnotToolbar({ t, extra }) {
   const openHighlighter = () => {
     setHlLeft(anchorLeft(hlRef.current, 60))
     t.setHighlighterOpen(true)
+  }
+  const openEraser = () => {
+    setEraserLeft(anchorLeft(eraserRef.current, 60))
+    t.setEraserOpen(true)
   }
 
   return (
@@ -2085,6 +2504,14 @@ function AnnotToolbar({ t, extra }) {
           btnRef={hlRef}
         />
         <ToolButton
+          active={t.tool === 'eraser'}
+          title="橡皮擦（双击设置擦除方式和大小）"
+          icon={Eraser}
+          onClick={() => t.setTool('eraser')}
+          onDoubleClick={openEraser}
+          btnRef={eraserRef}
+        />
+        <ToolButton
           active={t.tool === 'comment'}
           title="添加批注"
           icon={MessageSquareText}
@@ -2093,7 +2520,8 @@ function AnnotToolbar({ t, extra }) {
       </div>
       {extra}
       <div className="tool-group">
-        <ToolButton title="撤销" icon={Undo2} onClick={t.undo} />
+        <ToolButton title="撤销上一步 (Ctrl+Z)" icon={Undo2} onClick={t.undo} disabled={!t.canUndo} />
+        <ToolButton title="重做（取消撤销，Ctrl+Y）" icon={Redo2} onClick={t.redo} disabled={!t.canRedo} />
         <ToolButton title="清除全部批注" icon={Trash2} onClick={t.clearAll} />
         <ToolButton title="保存批注" icon={Save} onClick={t.saveNow} />
       </div>
@@ -2104,6 +2532,30 @@ function AnnotToolbar({ t, extra }) {
             ? '保存中…'
             : `${t.list.length} 条批注`}
       </span>
+      <div className="tool-group">
+        <button
+          className="tool-btn ocr-btn"
+          title="语音识别（Vosk 本地 / Qwen3-ASR 本地服务），识别后自动进入编辑模式，可插入到光标位置"
+          onClick={() => {
+            onOcrOpen?.()
+            setSpeechOpen(true)
+          }}
+        >
+          <Mic size={15} />
+          语音识别
+        </button>
+        <button
+          className="tool-btn ocr-btn"
+          title="打开手写画板 / 图片文字识别（本地 PaddleOCR 推理）"
+          onClick={() => {
+            onOcrOpen?.()
+            setOcrOpen(true)
+          }}
+        >
+          <ScanText size={15} />
+          文字识别
+        </button>
+      </div>
       <div className="tool-group zoom-group">
         <button className="icon-btn" title="缩小显示" onClick={() => setZoom((z) => Math.max(60, z - 10))}>
           <ZoomOut size={16} />
@@ -2123,10 +2575,11 @@ function AnnotToolbar({ t, extra }) {
               {PEN_PRESETS.map((p) => (
                 <button
                   key={p.type}
-                  className={`seg-btn ${t.pen.type === p.type ? 'active' : ''}`}
+                  className={`seg-btn shape-seg-btn ${t.pen.type === p.type ? 'active' : ''}`}
                   onClick={() => t.setPen((prev) => ({ ...prev, type: p.type }))}
                 >
-                  {p.label}
+                  <p.icon size={16} strokeWidth={2} />
+                  <span>{p.label}</span>
                 </button>
               ))}
             </div>
@@ -2160,6 +2613,44 @@ function AnnotToolbar({ t, extra }) {
               value={t.pen.size}
               onChange={(e) => t.setPen((prev) => ({ ...prev, size: Number(e.target.value) }))}
             />
+          </div>
+        </>
+      )}
+      {t.eraserOpen && (
+        <>
+          <div className="popover-backdrop" onClick={() => t.setEraserOpen(false)} />
+          <div className="pen-popover eraser-popover" style={{ left: eraserLeft }}>
+            <div className="pop-title">橡皮擦设置</div>
+            <div className="pop-label">擦除方式</div>
+            <div className="seg-group eraser-mode-group">
+              <button
+                className={`seg-btn ${t.eraser.type === 'pixel' ? 'active' : ''}`}
+                onClick={() => t.setEraser((prev) => ({ ...prev, type: 'pixel' }))}
+              >
+                <span className="eraser-option-icon pixel-eraser-icon" />
+                <span>像素橡皮</span>
+              </button>
+              <button
+                className={`seg-btn ${t.eraser.type === 'stroke' ? 'active' : ''}`}
+                onClick={() => t.setEraser((prev) => ({ ...prev, type: 'stroke' }))}
+              >
+                <span className="eraser-option-icon stroke-eraser-icon" />
+                <span>笔画橡皮</span>
+              </button>
+            </div>
+            <div className="pop-label">大小 <b>{t.eraser.size}px</b></div>
+            <input
+              type="range"
+              className="size-range"
+              min={4}
+              max={60}
+              value={t.eraser.size}
+              onChange={(e) => t.setEraser((prev) => ({ ...prev, size: Number(e.target.value) }))}
+            />
+            <div className="eraser-size-preview">
+              <span style={{ width: t.eraser.size, height: t.eraser.size }} />
+              <small>拖动调整擦除范围</small>
+            </div>
           </div>
         </>
       )}
@@ -2201,6 +2692,8 @@ function AnnotToolbar({ t, extra }) {
           </div>
         </>
       )}
+      <OcrModal open={ocrOpen} onClose={() => setOcrOpen(false)} onInsert={onOcrInsert} />
+      <SpeechModal open={speechOpen} onClose={() => setSpeechOpen(false)} onInsert={onOcrInsert} />
     </div>
   )
 }
@@ -2212,6 +2705,44 @@ function DocxView({ entry, notify }) {
   const [contentSaving, setContentSaving] = useState(false)
   const docRef = useRef(null)
   const tools = useAnnotTools({ annKey: 'docx', entry, notify })
+  // OCR 插入：进入编辑模式并记录光标位置
+  const ocrRangeRef = useRef(null)
+  const enterOcrEdit = useCallback(() => {
+    const doc = docRef.current
+    if (doc) ocrRangeRef.current = captureEditableSelection(doc)
+    setEditing(true)
+    requestAnimationFrame(() => {
+      const el = docRef.current
+      if (!el) return
+      el.focus()
+      const range = ocrRangeRef.current?.range
+      if (range) {
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+    })
+  }, [])
+  const insertOcrText = useCallback(
+    (text) => {
+      const doc = docRef.current
+      if (!doc) return false
+      const sel = window.getSelection()
+      let range = ocrRangeRef.current?.range
+      if (!range) {
+        range = document.createRange()
+        range.selectNodeContents(doc)
+        range.collapse(false)
+      }
+      sel.removeAllRanges()
+      sel.addRange(range)
+      const ok = insertAtRange(range, text)
+      ocrRangeRef.current = null
+      doc.focus()
+      return ok
+    },
+    [],
+  )
   const handleDocClick = useDocLinkGuard(docRef, notify)
 
   // 打开：mammoth 渲染
@@ -2242,8 +2773,13 @@ function DocxView({ entry, notify }) {
     if (!ready || !docRef.current) return
     docRef.current.innerHTML = html
     applyDocxHighlights(docRef.current, highlights)
+  }, [ready, html, highlights])
+
+  // 单独切换编辑态：不重建 DOM，避免 OCR 插入时已保存的光标位置失效
+  useEffect(() => {
+    if (!ready || !docRef.current) return
     docRef.current.contentEditable = editing ? 'true' : 'false'
-  }, [ready, html, highlights, editing])
+  }, [ready, editing])
 
   // 选中高亮文字 → “高亮选中文字”按钮呈选中态；未选中高亮 → 取消选中态
   useEffect(() => {
@@ -2347,7 +2883,7 @@ function DocxView({ entry, notify }) {
 
   return (
     <div className="doc-view">
-      <AnnotToolbar t={tools} extra={extraToolbar} />
+      <AnnotToolbar t={tools} extra={extraToolbar} onOcrOpen={enterOcrEdit} onOcrInsert={insertOcrText} />
       <CommentConnector
         comments={tools.list.filter((a) => a.type === 'comment')}
         selectedId={tools.selectedId}
@@ -2385,6 +2921,69 @@ function MarkdownView({ entry, notify }) {
   const slashIdRef = useRef(null)
   const saveTimer = useRef(null)
   const tools = useAnnotTools({ annKey: 'md', entry, notify })
+  // OCR 插入：记录光标所在块，识别文字插入到该块（代码块为 textarea 走 setRangeText）
+  const ocrRangeRef = useRef(null)
+  const mdBlocks = () => [...document.querySelectorAll('.md-editor .block')]
+  const enterOcrEdit = useCallback(() => {
+    const active = document.activeElement
+    let el = active?.closest?.('.block') || null
+    if (!el) el = mdBlocks().pop() || null
+    const sel = window.getSelection()
+    if (el && sel?.rangeCount && el.contains(sel.anchorNode)) {
+      ocrRangeRef.current = sel.getRangeAt(0).cloneRange()
+    } else if (el) {
+      const r = document.createRange()
+      r.selectNodeContents(el)
+      r.collapse(false)
+      ocrRangeRef.current = r
+    }
+    requestAnimationFrame(() => {
+      try {
+        el?.focus()
+      } catch {
+        /* ignore */
+      }
+    })
+  }, [])
+  const insertOcrText = useCallback((text) => {
+    const active = document.activeElement
+    if (active?.tagName === 'TEXTAREA' && active.classList.contains('block-code')) {
+      const start = active.selectionStart ?? active.value.length
+      const end = active.selectionEnd ?? start
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      setter.call(active, active.value.slice(0, start) + text + active.value.slice(end))
+      active.dispatchEvent(new Event('input', { bubbles: true }))
+      const pos = start + text.length
+      active.selectionStart = active.selectionEnd = pos
+      active.focus()
+      ocrRangeRef.current = null
+      return true
+    }
+    const blocks = mdBlocks()
+    let el = active?.closest?.('.block') || null
+    if (!el && ocrRangeRef.current) {
+      el = blocks.find((b) => b.contains(ocrRangeRef.current.startContainer)) || null
+    }
+    if (!el) el = blocks[blocks.length - 1] || null
+    if (!el) return false
+    const sel = window.getSelection()
+    let range = ocrRangeRef.current
+    if (!range) {
+      range = document.createRange()
+      range.selectNodeContents(el)
+      range.collapse(false)
+    }
+    sel.removeAllRanges()
+    sel.addRange(range)
+    insertAtRange(range, text)
+    ocrRangeRef.current = null
+    try {
+      el.focus()
+    } catch {
+      /* ignore */
+    }
+    return true
+  }, [])
   blocksRef.current = blocks
   slashIdRef.current = slashId
 
@@ -2587,7 +3186,7 @@ function MarkdownView({ entry, notify }) {
           保存
         </button>
       </div>
-      <AnnotToolbar t={tools} />
+      <AnnotToolbar t={tools} onOcrOpen={enterOcrEdit} onOcrInsert={insertOcrText} />
       <CommentConnector
         comments={tools.list.filter((a) => a.type === 'comment')}
         selectedId={tools.selectedId}
@@ -2741,6 +3340,44 @@ function EpubView({ entry, notify }) {
   const [contentSaving, setContentSaving] = useState(false)
   const docRef = useRef(null)
   const tools = useAnnotTools({ annKey: 'epub', entry, notify })
+  // OCR 插入：进入编辑模式并记录光标位置
+  const ocrRangeRef = useRef(null)
+  const enterOcrEdit = useCallback(() => {
+    const doc = docRef.current
+    if (doc) ocrRangeRef.current = captureEditableSelection(doc)
+    setEditing(true)
+    requestAnimationFrame(() => {
+      const el = docRef.current
+      if (!el) return
+      el.focus()
+      const range = ocrRangeRef.current?.range
+      if (range) {
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+    })
+  }, [])
+  const insertOcrText = useCallback(
+    (text) => {
+      const doc = docRef.current
+      if (!doc) return false
+      const sel = window.getSelection()
+      let range = ocrRangeRef.current?.range
+      if (!range) {
+        range = document.createRange()
+        range.selectNodeContents(doc)
+        range.collapse(false)
+      }
+      sel.removeAllRanges()
+      sel.addRange(range)
+      const ok = insertAtRange(range, text)
+      ocrRangeRef.current = null
+      doc.focus()
+      return ok
+    },
+    [],
+  )
   // src → 显示用 Blob URL（保存时换回原路径）
   const imageMapRef = useRef(new Map())
   const handleDocClick = useDocLinkGuard(docRef, notify)
@@ -2772,7 +3409,6 @@ function EpubView({ entry, notify }) {
     if (!ready || !docRef.current || !epubBook) return
     const root = docRef.current
     root.innerHTML = html
-    root.contentEditable = editing ? 'true' : 'false'
     const { getImageBlob, imageSrcs } = epubBook
     const map = imageMapRef.current
     const chapterDirs = epubBook.files.map((f) => f.path.replace(/[^/]*$/, ''))
@@ -2967,7 +3603,13 @@ function EpubView({ entry, notify }) {
     return () => {
       stopped = true
     }
-  }, [ready, html, editing, epubBook])
+  }, [ready, html, epubBook])
+
+  // 单独切换编辑态：不重建 DOM，避免 OCR 插入时已保存的光标位置失效
+  useEffect(() => {
+    if (!ready || !docRef.current) return
+    docRef.current.contentEditable = editing ? 'true' : 'false'
+  }, [ready, editing])
 
   const saveContent = async () => {
     if (!docRef.current || !epubBook) return
@@ -3044,7 +3686,7 @@ function EpubView({ entry, notify }) {
 
   return (
     <div className="doc-view">
-      <AnnotToolbar t={tools} extra={extraToolbar} />
+      <AnnotToolbar t={tools} extra={extraToolbar} onOcrOpen={enterOcrEdit} onOcrInsert={insertOcrText} />
       <CommentConnector
         comments={tools.list.filter((a) => a.type === 'comment')}
         selectedId={tools.selectedId}
@@ -3073,47 +3715,797 @@ function EpubView({ entry, notify }) {
   )
 }
 
-/** Excel 表格渲染（SheetJS 只读）+ 批注 */
+/** Excel 表格渲染（SheetJS）+ 内容编辑：单元格可直接编辑，保存时写回 xlsx 原文件 */
+// ─── Excel 网格编辑器（openpyxl 服务端修改 + 前端网格 UI）────────────────
+
+/** 表格单元格显示文本（只读展示） */
+function cellDisplay(v) {
+  if (v === null || v === undefined || v === '') return ''
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  if (v instanceof Date) return v.toLocaleDateString('zh-CN')
+  if (typeof v === 'number') return v.toLocaleString('zh-CN')
+  return String(v)
+}
+
+/** 单元格编辑框里的原始文本 */
+function cellRaw(v) {
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  if (v instanceof Date) return v.toISOString()
+  return String(v)
+}
+
+/** 把编辑输入解析为 (值, 类型)：空→清空；=开头→公式字符串；数字/布尔→对应类型；否则字符串 */
+function parseCellInput(text) {
+  const t = (text ?? '').trim()
+  if (t === '') return { v: null, t: 'e' }
+  if (t.startsWith('=')) return { v: t, t: 's' }
+  if (/^[+-]?(\d[\d,]*)(\.\d+)?$/.test(t)) {
+    const n = Number(t.replace(/,/g, ''))
+    if (Number.isFinite(n)) return { v: n, t: 'n' }
+  }
+  if (/^(true|false)$/i.test(t)) return { v: /^true$/i.test(t), t: 'b' }
+  return { v: t, t: 's' }
+}
+
+/** 新旧单元格值是否等效（空字符串与 null 视为一致） */
+function sameCellValue(a, b) {
+  if (a === b) return true
+  if (a == null && (b == null || b === '')) return true
+  if (b == null && (a == null || a === '')) return true
+  return false
+}
+
+/** 列字母标号：0→A, 25→Z, 26→AA */
+function colLabel(i) {
+  let s = ''
+  let n = i + 1
+  while (n > 0) {
+    const m = (n - 1) % 26
+    s = String.fromCharCode(65 + m) + s
+    n = Math.floor((n - 1) / 26)
+  }
+  return s
+}
+
+/** 深拷贝网格（撤销重放用） */
+function cloneGrid(values) {
+  return (values || []).map((row) => (Array.isArray(row) ? row.slice() : []))
+}
+
 function ExcelView({ entry, notify }) {
-  const [html, setHtml] = useState('')
   const [ready, setReady] = useState(false)
-  const docRef = useRef(null)
+  const [loadError, setLoadError] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [sheets, setSheets] = useState([])
+  const [sheetIdx, setSheetIdx] = useState(0)
+  const [sel, setSel] = useState({ r: 0, c: 0, r2: 0, c2: 0 })
+  const [editingCell, setEditingCell] = useState(null)
+  const [cellText, setCellText] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [wbOps, setWbOps] = useState([])
+  const gridRef = useRef(null)
+  const dragRef = useRef(null)
+  const editingCellRef = useRef(null)
+  const editingSheetRef = useRef(0)
+  const cellTextRef = useRef('')
+  const redoOpsRef = useRef([]) // 重做栈：撤销时被移除的 op（{ idx, op }）
   const tools = useAnnotTools({ annKey: 'excel', entry, notify })
+  // OCR 插入：进入编辑模式，识别文字写入当前选中单元格
+  const enterOcrEdit = useCallback(() => {
+    setEditing(true)
+    requestAnimationFrame(() => gridRef.current?.focus())
+  }, [])
+  const insertOcrText = useCallback(
+    (text) => {
+      setEditing(true)
+      const { r, c } = sel
+      pushOp({ op: 'set', r, c, v: text, t: 's' })
+      gridRef.current?.focus()
+      return true
+    },
+    [sel, pushOp],
+  )
+
+  const active = sheets[sheetIdx] || null
+
+  const mutateSheet = useCallback((idx, fn) => {
+    setSheets((prev) => prev.map((s, i) => (i === idx ? fn(s) : s)))
+  }, [])
+
+  // 解析文件 → sheets 状态
+  const load = useCallback(async () => {
+    const src =
+      entry.handle && typeof entry.handle.getFile === 'function'
+        ? await entry.handle.getFile()
+        : entry.file
+    const { sheets: parsed } = await readExcelGrid(src)
+    setSheets(
+      parsed.map((s) => ({
+        ...s,
+        id: uid(),
+        ops: [],
+        baseValues: cloneGrid(s.values),
+        baseMerges: (s.merges || []).slice(),
+      })),
+    )
+    setSheetIdx(0)
+    setSel({ r: 0, c: 0, r2: 0, c2: 0 })
+    setWbOps([])
+    redoOpsRef.current = []
+    setReady(true)
+  }, [entry])
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const { html: h } = await renderExcelHtml(entry.file)
-        if (cancelled) return
-        setHtml(h)
-        setReady(true)
+        await load()
       } catch (err) {
-        if (!cancelled) notify(`表格解析失败：${err.message}`, 'error')
+        if (!cancelled) {
+          setLoadError(err.message)
+          setReady(true)
+          notify(`表格解析失败：${err.message}`, 'error')
+        }
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [entry, notify])
+  }, [load, notify])
+
+  // 编辑模式下，鼠标松开结束拖拽框选
+  useEffect(() => {
+    if (!editing) return
+    const up = () => {
+      dragRef.current = null
+    }
+    window.addEventListener('mouseup', up)
+    return () => window.removeEventListener('mouseup', up)
+  }, [editing])
+
+  // 进入编辑模式时聚焦网格，让键盘快捷键生效
+  useEffect(() => {
+    if (editing) gridRef.current?.focus()
+  }, [editing])
 
   useEffect(() => {
-    if (!ready || !docRef.current) return
-    docRef.current.innerHTML = html
-  }, [ready, html])
+    editingCellRef.current = editingCell
+  }, [editingCell])
+  useEffect(() => {
+    cellTextRef.current = cellText
+  }, [cellText])
+
+  // 合并区域索引：anchor → {r1,c1,r2,c2}，covered → 被合并覆盖的格子
+  const mergeMap = useMemo(() => {
+    const map = new Map()
+    const covered = new Set()
+    for (const m of active?.merges || []) {
+      for (let r = m.r1; r <= m.r2; r++) {
+        for (let c = m.c1; c <= m.c2; c++) covered.add(`${r},${c}`)
+      }
+      map.set(`${m.r1},${m.c1}`, m)
+    }
+    return { map, covered }
+  }, [sheets, sheetIdx]) // 依赖 sheets：合并是原地变更，需在每次操作后重建
+
+  // 记录一条编辑操作：应用到指定表的网格 + 追加 ops（服务端按顺序重放）
+  const pushOpTo = useCallback((idx, op) => {
+    redoOpsRef.current = [] // 新操作打断重做链
+    setSheets((prev) =>
+      prev.map((s, i) => {
+        if (i !== idx) return s
+        applyGridOp(s.values, s.merges, op)
+        return { ...s, ops: [...s.ops, op] }
+      }),
+    )
+  }, [])
+
+  const pushOp = useCallback((op) => pushOpTo(sheetIdx, op), [pushOpTo, sheetIdx])
+
+  const undo = () => {
+    const cur = sheets[sheetIdx]
+    if (!cur || !cur.ops.length) {
+      notify('没有可撤销的操作', 'info')
+      return
+    }
+    redoOpsRef.current.push({ idx: sheetIdx, op: cur.ops[cur.ops.length - 1] })
+    const ops = cur.ops.slice(0, -1)
+    const values = cloneGrid(cur.baseValues)
+    const merges = (cur.baseMerges || []).slice()
+    for (const op of ops) applyGridOp(values, merges, op)
+    mutateSheet(sheetIdx, (s) => ({ ...s, ops, values, merges }))
+  }
+
+  const redo = () => {
+    const item = redoOpsRef.current.pop()
+    if (!item || item.idx !== sheetIdx) {
+      notify('没有可重做的操作', 'info')
+      return
+    }
+    const cur = sheets[sheetIdx]
+    const ops = [...cur.ops, item.op]
+    const values = cloneGrid(cur.baseValues)
+    const merges = (cur.baseMerges || []).slice()
+    for (const op of ops) applyGridOp(values, merges, op)
+    mutateSheet(sheetIdx, (s) => ({ ...s, ops, values, merges }))
+  }
+
+  const insertRows = (above) => {
+    const { r, r2 } = sel
+    const at = above ? r : r2 + 1
+    const amount = r2 - r + 1
+    pushOp({ op: 'insertRow', at, amount })
+    setSel({ r: at, c: sel.c, r2: at + amount - 1, c2: sel.c2 })
+  }
+
+  const insertCols = (left) => {
+    const { c, c2 } = sel
+    const at = left ? c : c2 + 1
+    const amount = c2 - c + 1
+    pushOp({ op: 'insertCol', at, amount })
+    setSel({ r: sel.r, c: at, r2: sel.r2, c2: at + amount - 1 })
+  }
+
+  const deleteRows = () => {
+    const { r, r2 } = sel
+    pushOp({ op: 'deleteRow', at: r, amount: r2 - r + 1 })
+    const rows = Math.max(1, (active?.values || []).length)
+    const nr = Math.min(r, Math.max(0, rows - 1))
+    setSel({ r: nr, c: sel.c, r2: nr, c2: sel.c2 })
+  }
+
+  const deleteCols = () => {
+    const { c, c2 } = sel
+    pushOp({ op: 'deleteCol', at: c, amount: c2 - c + 1 })
+    const cols = Math.max(1, (active?.values || []).reduce((m, row) => Math.max(m, row.length), 0))
+    const nc = Math.min(c, Math.max(0, cols - 1))
+    setSel({ r: sel.r, c: nc, r2: sel.r2, c2: nc })
+  }
+
+  const clearCells = () => {
+    const { r, r2, c, c2 } = sel
+    let n = 0
+    for (let i = r; i <= r2; i++) {
+      for (let j = c; j <= c2; j++) {
+        pushOp({ op: 'set', r: i, c: j, v: null, t: 'e' })
+        n++
+      }
+    }
+    if (n) notify(`已清空 ${n} 个单元格`, 'info')
+  }
+
+  const toggleMerge = () => {
+    const { r, r2, c, c2 } = sel
+    if (r === r2 && c === c2) {
+      notify('请先框选要合并的单元格区域', 'error')
+      return
+    }
+    const merged = (active?.merges || []).some(
+      (m) => m.r1 === r && m.c1 === c && m.r2 === r2 && m.c2 === c2,
+    )
+    pushOp(merged ? { op: 'unmerge', r1: r, c1: c, r2, c2 } : { op: 'merge', r1: r, c1: c, r2, c2 })
+  }
+
+  const selectCell = (r, c) => {
+    const m = mergeMap.map.get(`${r},${c}`)
+    if (m) setSel({ r: m.r1, c: m.c1, r2: m.r2, c2: m.c2 })
+    else setSel({ r, c, r2: r, c2: c })
+  }
+
+  const selectRow = (r) => {
+    const cols = Math.max(1, (active?.values || []).reduce((m, row) => Math.max(m, row.length), 0))
+    setSel({ r, c: 0, r2: r, c2: cols - 1 })
+  }
+
+  const selectCol = (c) => {
+    const rows = Math.max(1, (active?.values || []).length)
+    setSel({ r: 0, c, r2: rows - 1, c2: c })
+  }
+
+  const startEdit = (r, c) => {
+    if (!editing) return
+    if (editingCellRef.current) commitEdit()
+    editingSheetRef.current = sheetIdx
+    setEditingCell({ r, c })
+    setCellText(cellRaw(active?.values?.[r]?.[c]))
+    setSel({ r, c, r2: r, c2: c })
+  }
+
+  const commitEdit = () => {
+    const ec = editingCellRef.current
+    if (!ec) return
+    const sheet = sheets[editingSheetRef.current]
+    const old = sheet?.values?.[ec.r]?.[ec.c] ?? null
+    const parsed = parseCellInput(cellTextRef.current)
+    if (!sameCellValue(old, parsed.v)) {
+      pushOpTo(editingSheetRef.current, { op: 'set', r: ec.r, c: ec.c, v: parsed.v, t: parsed.t })
+    }
+    editingCellRef.current = null
+    setEditingCell(null)
+    gridRef.current?.focus()
+  }
+
+  const cancelEdit = () => {
+    editingCellRef.current = null
+    setEditingCell(null)
+    gridRef.current?.focus()
+  }
+
+  const keyMove = (e, dr, dc) => {
+    const rows = Math.max(1, (active?.values || []).length)
+    const cols = Math.max(1, (active?.values || []).reduce((m, row) => Math.max(m, row.length), 0))
+    if (e.shiftKey) {
+      setSel((prev) => ({
+        r: prev.r,
+        c: prev.c,
+        r2: Math.min(rows - 1, Math.max(prev.r, prev.r2 + dr)),
+        c2: Math.min(cols - 1, Math.max(prev.c, prev.c2 + dc)),
+      }))
+    } else {
+      const r = Math.min(rows - 1, Math.max(0, sel.r + dr))
+      const c = Math.min(cols - 1, Math.max(0, sel.c + dc))
+      setSel({ r, c, r2: r, c2: c })
+    }
+  }
+
+  const onCellMouseDown = (e, r, c) => {
+    if (!editing) return
+    if (e.target.closest && e.target.closest('.cell-editor')) return
+    e.preventDefault() // 防拖选文字，同时保持网格容器焦点
+    gridRef.current?.focus()
+    if (e.shiftKey) {
+      setSel((prev) => ({ r: prev.r, c: prev.c, r2: r, c2: c }))
+      return
+    }
+    dragRef.current = { anchor: { r, c } }
+    selectCell(r, c)
+  }
+
+  const onCellMouseEnter = (r, c) => {
+    const d = dragRef.current
+    if (!d) return
+    setSel({
+      r: Math.min(d.anchor.r, r),
+      c: Math.min(d.anchor.c, c),
+      r2: Math.max(d.anchor.r, r),
+      c2: Math.max(d.anchor.c, c),
+    })
+  }
+
+  const handleKeyDown = (e) => {
+    if (!editing || editingCell) return
+    const isCtrlAlt =
+      e.ctrlKey && e.altKey && !(e.getModifierState && e.getModifierState('AltGraph'))
+    if (e.key.startsWith('Arrow')) {
+      if (isCtrlAlt) {
+        e.preventDefault()
+        if (e.key === 'ArrowUp') insertRows(true)
+        else if (e.key === 'ArrowDown') insertRows(false)
+        else if (e.key === 'ArrowLeft') insertCols(true)
+        else if (e.key === 'ArrowRight') insertCols(false)
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      e.preventDefault()
+      if (e.key === 'ArrowUp') keyMove(e, -1, 0)
+      else if (e.key === 'ArrowDown') keyMove(e, 1, 0)
+      else if (e.key === 'ArrowLeft') keyMove(e, 0, -1)
+      else if (e.key === 'ArrowRight') keyMove(e, 0, 1)
+      return
+    }
+    if (e.key === 'Enter' || e.key === 'F2') {
+      e.preventDefault()
+      startEdit(sel.r, sel.c)
+      return
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      keyMove(e, 0, e.shiftKey ? -1 : 1)
+      return
+    }
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault()
+      clearCells()
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      undo()
+      return
+    }
+    if (
+      ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'y') ||
+      ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z')
+    ) {
+      e.preventDefault()
+      redo()
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault()
+      toggleMerge()
+      return
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    if (e.key.length === 1) {
+      e.preventDefault()
+      startEdit(sel.r, sel.c)
+      setCellText(e.key)
+    }
+  }
+
+  const onCellEditorKeyDown = (e) => {
+    e.stopPropagation()
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitEdit()
+      keyMove(e, e.shiftKey ? -1 : 1, 0)
+      return
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      commitEdit()
+      keyMove(e, 0, e.shiftKey ? -1 : 1)
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelEdit()
+    }
+  }
+
+  const onCellEditorBlur = () => {
+    // 已取消（Escape）或已提交（Enter 后卸载触发 blur）时不再重复提交
+    if (!editingCellRef.current) return
+    commitEdit()
+  }
+
+  // ─── 工作表管理 ───
+  const uniqueSheetName = (base) => {
+    const names = new Set(sheets.map((s) => s.name))
+    let n = (base || 'Sheet').replace(/[\\/?*[\]:]/g, '').slice(0, 31).trim() || 'Sheet'
+    let i = 1
+    while (names.has(n)) {
+      const prefix = n.slice(0, 28)
+      n = `${prefix}${i}`
+      i++
+    }
+    return n
+  }
+
+  const addSheet = () => {
+    const s = {
+      id: uid(),
+      name: uniqueSheetName(`Sheet${sheets.length + 1}`),
+      origIndex: -1,
+      values: [],
+      merges: [],
+      ops: [],
+      baseValues: [],
+      baseMerges: [],
+    }
+    setSheets((prev) => [...prev, s])
+    setSheetIdx(sheets.length)
+  }
+
+  const renameSheet = () => {
+    const cur = active
+    if (!cur) return
+    const input = window.prompt('新工作表名称：', cur.name)
+    if (input === null || input === undefined) return
+    const name = uniqueSheetName(input)
+    if (cur.origIndex >= 0) {
+      setWbOps((prev) => [...prev, { op: 'renameSheet', sheetIndex: cur.origIndex, name }])
+    }
+    mutateSheet(sheetIdx, (s) => ({ ...s, name }))
+  }
+
+  const deleteSheet = (i) => {
+    const s = sheets[i]
+    if (!s) return
+    if (sheets.length <= 1) {
+      notify('至少保留一个工作表', 'error')
+      return
+    }
+    if (!window.confirm(`删除工作表「${s.name}」？该操作不可撤销。`)) return
+    if (s.origIndex >= 0) {
+      setWbOps((prev) => [...prev, { op: 'deleteSheet', sheetIndex: s.origIndex }])
+    }
+    const next = sheets.filter((_, idx) => idx !== i)
+    setSheets(next)
+    setSheetIdx((idx) => Math.min(idx, next.length - 1))
+  }
+
+  const toggleEditing = () => {
+    if (editing && editingCellRef.current) commitEdit()
+    setEditing(!editing)
+  }
+
+  const saveContent = async () => {
+    if (editingCellRef.current) commitEdit()
+    setSaving(true)
+    try {
+      const payload = {
+        wbOps,
+        sheets: sheets.map((s) => ({
+          sheetIndex: s.origIndex,
+          name: s.name,
+          ops: s.ops,
+          values: s.values,
+          merges: s.merges,
+        })),
+      }
+      await saveExcelChanges(entry, payload)
+      await load()
+      notify('已保存回 Excel 文件（openpyxl 修改）', 'success')
+    } catch (err) {
+      notify(`保存失败：${err.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const extraToolbar = (
+    <>
+      <div className="tool-group">
+        <button
+          className={`tool-btn ${editing ? 'active' : ''}`}
+          title={editing ? '退出编辑模式' : '进入编辑模式（修改单元格 / 插入行列 / 合并 / 工作表）'}
+          onClick={toggleEditing}
+        >
+          <TextCursor size={15} />
+          {editing ? '退出编辑' : '编辑内容'}
+        </button>
+        {editing && (
+          <button className="tool-btn primary" onClick={saveContent} disabled={saving}>
+            <Save size={15} />
+            {saving ? '保存中…' : '保存回 Excel'}
+          </button>
+        )}
+      </div>
+      {editing && (
+        <>
+          <div className="tool-group" title="插入 / 删除行与列">
+            <ToolButton
+              title="在上方插入行 (Ctrl+Alt+↑)"
+              icon={ArrowUp}
+              onClick={() => {
+                insertRows(true)
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="在下方插入行 (Ctrl+Alt+↓)"
+              icon={ArrowDown}
+              onClick={() => {
+                insertRows(false)
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="删除选中行"
+              icon={Trash2}
+              onClick={() => {
+                deleteRows()
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="在左侧插入列 (Ctrl+Alt+←)"
+              icon={ArrowLeft}
+              onClick={() => {
+                insertCols(true)
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="在右侧插入列 (Ctrl+Alt+→)"
+              icon={ArrowRight}
+              onClick={() => {
+                insertCols(false)
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="删除选中列"
+              icon={Delete}
+              onClick={() => {
+                deleteCols()
+                gridRef.current?.focus()
+              }}
+            />
+          </div>
+          <div className="tool-group">
+            <ToolButton
+              title="清空选中单元格内容 (Del)"
+              icon={X}
+              onClick={() => {
+                clearCells()
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="合并 / 取消合并选中区域 (Ctrl+Shift+M)"
+              icon={Merge}
+              onClick={() => {
+                toggleMerge()
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="撤销 (Ctrl+Z)"
+              icon={Undo2}
+              onClick={() => {
+                undo()
+                gridRef.current?.focus()
+              }}
+            />
+            <ToolButton
+              title="重做 (Ctrl+Y)"
+              icon={Redo2}
+              onClick={() => {
+                redo()
+                gridRef.current?.focus()
+              }}
+            />
+          </div>
+        </>
+      )}
+    </>
+  )
+
+  const sheetBar = (
+    <div className="sheet-tabs">
+      {sheets.map((s, i) => (
+        <button
+          key={s.id}
+          className={`sheet-tab ${i === sheetIdx ? 'active' : ''}`}
+          title={s.name}
+          onClick={() => setSheetIdx(i)}
+        >
+          {s.name}
+          {s.ops.length > 0 && <span className="sheet-dirty" title="有未保存的修改" />}
+          {editing && sheets.length > 1 && (
+            <span
+              className="sheet-close"
+              title="删除工作表"
+              onClick={(e) => {
+                e.stopPropagation()
+                deleteSheet(i)
+              }}
+            >
+              ×
+            </span>
+          )}
+        </button>
+      ))}
+      {editing && (
+        <button className="sheet-add" title="新建工作表" onClick={addSheet}>
+          <Plus size={12} />
+        </button>
+      )}
+      {editing && active && (
+        <button className="sheet-rename" title="重命名当前工作表" onClick={renameSheet}>
+          重命名
+        </button>
+      )}
+    </div>
+  )
+
+  const renderCell = (r, c, m) => {
+    const inRange = r >= sel.r && r <= sel.r2 && c >= sel.c && c <= sel.c2
+    const isAnchor = r === sel.r && c === sel.c && !editingCell
+    const v = active?.values?.[r]?.[c]
+    const editingHere = editingCell && editingCell.r === r && editingCell.c === c
+    return (
+      <td
+        key={`${r},${c}`}
+        rowSpan={m ? m.r2 - m.r1 + 1 : undefined}
+        colSpan={m ? m.c2 - m.c1 + 1 : undefined}
+        className={`cell${inRange ? ' in-range' : ''}${isAnchor ? ' anchor' : ''}${m ? ' merged' : ''}`}
+        onMouseDown={(e) => onCellMouseDown(e, r, c)}
+        onMouseEnter={() => onCellMouseEnter(r, c)}
+        onClick={() => {
+          if (!editingCell) selectCell(r, c)
+        }}
+        onDoubleClick={() => {
+          if (editing) startEdit(r, c)
+        }}
+        title={v == null || v === '' ? '' : cellDisplay(v)}
+      >
+        {editingHere ? (
+          <input
+            className="cell-editor"
+            autoFocus
+            value={cellText}
+            onChange={(e) => setCellText(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            onKeyDown={onCellEditorKeyDown}
+            onBlur={onCellEditorBlur}
+            onMouseDown={(e) => e.stopPropagation()}
+          />
+        ) : (
+          cellDisplay(v)
+        )}
+      </td>
+    )
+  }
+
+  const renderGrid = () => {
+    if (!active) return null
+    const rowCount = Math.max(1, active.values.length)
+    const colCount = Math.max(1, active.values.reduce((m, row) => Math.max(m, row.length), 0))
+    const rows = []
+    for (let r = 0; r < rowCount; r++) {
+      const tds = []
+      for (let c = 0; c < colCount; c++) {
+        const key = `${r},${c}`
+        const m = mergeMap.map.get(key)
+        // 被合并覆盖的格子跳过（锚点格保留，负责 colspan/rowspan）
+        if (mergeMap.covered.has(key) && !m) continue
+        tds.push(renderCell(r, c, m))
+      }
+      rows.push(
+        <tr key={r}>
+          <th className="row-head" title={`选中第 ${r + 1} 行`} onClick={() => selectRow(r)}>
+            {r + 1}
+          </th>
+          {tds}
+        </tr>,
+      )
+    }
+    return (
+      <table className="excel-grid">
+        <thead>
+          <tr>
+            <th className="corner" />
+            {Array.from({ length: colCount }, (_, c) => (
+              <th
+                key={c}
+                className="col-head"
+                title={`选中 ${colLabel(c)} 列`}
+                onClick={() => selectCol(c)}
+              >
+                {colLabel(c)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    )
+  }
 
   return (
     <div className="doc-view">
-      <AnnotToolbar t={tools} />
+      <AnnotToolbar t={tools} extra={extraToolbar} onOcrOpen={enterOcrEdit} onOcrInsert={insertOcrText} />
+      {ready && sheets.length > 0 && sheetBar}
       <CommentConnector
         comments={tools.list.filter((a) => a.type === 'comment')}
         selectedId={tools.selectedId}
       >
-        <div className="docx-scroll">
-          <div className="docx-doc excel-doc annot-surface">
-            <div className="excel-body" ref={docRef} />
-            <AnnotOverlay t={tools} />
-          </div>
+        <div className="docx-scroll excel-scroll">
+          {!ready ? (
+            <div className="loading">正在解析表格…</div>
+          ) : loadError ? (
+            <div className="file-error">表格解析失败：{loadError}</div>
+          ) : (
+            <div className={`docx-doc excel-doc annot-surface ${editing ? 'content-editing' : ''}`}>
+              <div
+                className={`excel-body ${editing ? 'editing' : ''}`}
+                ref={gridRef}
+                tabIndex={0}
+                onKeyDown={handleKeyDown}
+                onMouseDown={(e) => {
+                  if (editing && !e.target.closest('.cell-editor')) gridRef.current?.focus()
+                }}
+              >
+                {renderGrid()}
+              </div>
+              {!editing && <AnnotOverlay t={tools} />}
+            </div>
+          )}
         </div>
         <CommentPanel
           comments={tools.list.filter((a) => a.type === 'comment')}
@@ -3130,6 +4522,173 @@ function ExcelView({ entry, notify }) {
 }
 
 /** PPT 等浏览器无法内嵌预览的类型：占位白板 + 批注 + 浏览器直开 */
+function TextView({ entry, notify }) {
+  const [text, setText] = useState('')
+  const [ready, setReady] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [savedAt, setSavedAt] = useState('')
+  const [saving, setSaving] = useState(false)
+  const textRef = useRef('')
+  const saveTimer = useRef(null)
+  const [ocrOpen, setOcrOpen] = useState(false)
+  const [speechOpen, setSpeechOpen] = useState(false)
+  const textareaRef = useRef(null)
+  const ocrSelRef = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const t = await readText(entry.file)
+        if (cancelled) return
+        textRef.current = t
+        setText(t)
+        setReady(true)
+        setDirty(false)
+      } catch (err) {
+        if (!cancelled) notify(`文本读取失败：${err.message}`, 'error')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [entry, notify])
+
+  const saveNow = useCallback(async () => {
+    setSaving(true)
+    try {
+      await saveTextFile(entry, textRef.current)
+      setDirty(false)
+      setSavedAt(
+        new Date().toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      )
+      notify('已保存', 'success')
+    } catch (err) {
+      notify(`保存失败：${err.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }, [entry, notify])
+
+  const scheduleSave = useCallback(() => {
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(saveNow, 800)
+  }, [saveNow])
+
+  // OCR 插入：记录光标位置，识别文字插入到光标处
+  const enterOcrEdit = useCallback(() => {
+    const ta = textareaRef.current
+    ocrSelRef.current = captureTextareaSelection(ta, textRef.current.length)
+    requestAnimationFrame(() => ta?.focus())
+  }, [])
+  const insertOcrText = useCallback(
+    (text) => {
+      const cur = textRef.current
+      const sel = ocrSelRef.current || { start: cur.length, end: cur.length }
+      const next = cur.slice(0, sel.start) + text + cur.slice(sel.end)
+      textRef.current = next
+      setText(next)
+      setDirty(true)
+      scheduleSave()
+      ocrSelRef.current = null
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current
+        if (ta) {
+          const pos = sel.start + text.length
+          ta.selectionStart = ta.selectionEnd = pos
+          ta.focus()
+        }
+      })
+      return true
+    },
+    [scheduleSave],
+  )
+
+  const handleChange = useCallback(
+    (e) => {
+      textRef.current = e.target.value
+      setText(e.target.value)
+      setDirty(true)
+      scheduleSave()
+    },
+    [scheduleSave],
+  )
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        clearTimeout(saveTimer.current)
+        saveNow()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [saveNow])
+
+  return (
+    <div className="text-view">
+      <div className="doc-toolbar">
+        <span className="toolbar-title">纯文本编辑</span>
+        <span className={`dirty-dot ${dirty ? 'on' : ''}`} />
+        <span className="toolbar-hint">
+          {saving ? '保存中…' : dirty ? '未保存' : savedAt ? `已保存 ${savedAt}` : '自动保存'}
+        </span>
+        <button
+          className="tool-btn"
+          onClick={() => {
+            clearTimeout(saveTimer.current)
+            saveNow()
+          }}
+          disabled={saving}
+        >
+          <Save size={15} />
+          保存
+        </button>
+        <button
+          className="tool-btn ocr-btn"
+          title="语音识别（Vosk 本地 / Qwen3-ASR 本地服务），识别后可插入到光标位置"
+          onClick={() => {
+            enterOcrEdit()
+            setSpeechOpen(true)
+          }}
+        >
+          <Mic size={15} />
+          语音识别
+        </button>
+        <button
+          className="tool-btn ocr-btn"
+          title="打开手写画板 / 图片文字识别（本地 PaddleOCR 推理），识别后可插入到光标位置"
+          onClick={() => {
+            enterOcrEdit()
+            setOcrOpen(true)
+          }}
+        >
+          <ScanText size={15} />
+          文字识别
+        </button>
+      </div>
+      {!ready ? (
+        <div className="loading">正在加载文本…</div>
+      ) : (
+        <textarea
+          ref={textareaRef}
+          className="text-editor"
+          value={text}
+          onChange={handleChange}
+          spellCheck={false}
+          placeholder="在此输入文本…"
+        />
+      )}
+      <OcrModal open={ocrOpen} onClose={() => setOcrOpen(false)} onInsert={insertOcrText} />
+      <SpeechModal open={speechOpen} onClose={() => setSpeechOpen(false)} onInsert={insertOcrText} />
+    </div>
+  )
+}
+
 function OfficeView({ entry, notify }) {
   const meta = TYPE_META[entry.type] || TYPE_META.unknown
   const Icon = meta.icon
