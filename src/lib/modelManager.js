@@ -97,7 +97,7 @@ function findLocalVoskModel() {
 /** 通过 HTTP 探测本地模型是否可访问 */
 export async function probeLocalVosk() {
   try {
-    const res = await fetch('/models/vosk-model-small-cn-0.22.tar.gz', { method: 'HEAD', signal: AbortSignal.timeout(3000) })
+    const res = await fetch(new URL('./models/vosk-model-small-cn-0.22.tar.gz', document.baseURI).href, { method: 'HEAD', signal: AbortSignal.timeout(3000) })
     if (res.ok) {
       return { available: true, sizeBytes: parseInt(res.headers.get('content-length') || '0', 10) }
     }
@@ -144,11 +144,12 @@ export function updateVoskModelUrl(url) {
 export function getVoskModelUrl() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
-    if (!raw) return '/models/vosk-model-small-cn-0.22.tar.gz'
+    const bundled = new URL('./models/vosk-model-small-cn-0.22.tar.gz', document.baseURI).href
+    if (!raw) return bundled
     const s = JSON.parse(raw)
-    return s.voskModelUrl || '/models/vosk-model-small-cn-0.22.tar.gz'
+    return s.voskModelUrl || bundled
   } catch {
-    return '/models/vosk-model-small-cn-0.22.tar.gz'
+    return './models/vosk-model-small-cn-0.22.tar.gz'
   }
 }
 

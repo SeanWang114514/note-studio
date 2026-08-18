@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { OCR_MODELS } from '../lib/ocr.js'
+import { OCR_MODELS, getDefaultOcrModel } from '../lib/ocr.js'
 import {
   DEFAULT_SETTINGS as DEFAULT_SPEECH_SETTINGS,
   SPEECH_MODELS,
@@ -23,9 +23,9 @@ export const OCR_MODEL_STORAGE_KEY = 'noteStudio.ocrModel.v1'
 
 export function loadOcrModel() {
   try {
-    return localStorage.getItem(OCR_MODEL_STORAGE_KEY) || OCR_MODELS[0].id
+    return localStorage.getItem(OCR_MODEL_STORAGE_KEY) || getDefaultOcrModel()
   } catch {
-    return OCR_MODELS[0].id
+    return getDefaultOcrModel()
   }
 }
 

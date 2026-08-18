@@ -195,6 +195,25 @@ function drawAnnotation(ctx, a, w, h, isDraft = false) {
   ctx.restore()
 }
 
+function annotationBounds(a) {
+  if (a.type === 'line' || a.type === 'rect' || a.type === 'ellipse') {
+    return {
+      x: Math.min(a.x0 ?? 0, a.x1 ?? 0),
+      y: Math.min(a.y0 ?? 0, a.y1 ?? 0),
+      w: Math.abs((a.x1 ?? 0) - (a.x0 ?? 0)),
+      h: Math.abs((a.y1 ?? 0) - (a.y0 ?? 0)),
+    }
+  }
+  if (a.points?.length) {
+    const xs = a.points.map((p) => p.x)
+    const ys = a.points.map((p) => p.y)
+    const x = Math.min(...xs)
+    const y = Math.min(...ys)
+    return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y }
+  }
+  return null
+}
+
 function drawShapeSelection(ctx, a, w, h) {
   const pts = []
   if (a.type === 'line' || a.type === 'rect' || a.type === 'ellipse') {
@@ -245,58 +264,25 @@ function distToSegment(px, py, x1, y1, x2, y2) {
 }
 
 function hitTestAnnotation(a, px, py, w, h, extraTolerance = 0) {
+  const tolerance = Math.max(12, Number(extraTolerance) || 0)
   if (a.type === 'line') {
-    return (
-      distToSegment(px, py, (a.x0 ?? 0) * w, (a.y0 ?? 0) * h, (a.x1 ?? 0) * w, (a.y1 ?? 0) * h) <= 10
-    )
+    return distToSegment(px, py, (a.x0 ?? 0) * w, (a.y0 ?? 0) * h, (a.x1 ?? 0) * w, (a.y1 ?? 0) * h) <= tolerance
   }
-  if (a.type === 'rect') {
+  if (a.type === 'rect' || a.type === 'ellipse') {
     const x = Math.min(a.x0 ?? 0, a.x1 ?? 0) * w
     const y = Math.min(a.y0 ?? 0, a.y1 ?? 0) * h
     const rw = Math.abs((a.x1 ?? 0) - (a.x0 ?? 0)) * w
     const rh = Math.abs((a.y1 ?? 0) - (a.y0 ?? 0)) * h
-    const nearX = px >= x - 8 && px <= x + rw + 8
-    const nearY = py >= y - 8 && py <= y + rh + 8
-    if (!nearX || !nearY) return false
-    const inside = px >= x && px <= x + rw && py >= y && py <= y + rh
-    if (inside) return false
-    return (
-      Math.abs(py - y) <= 10 ||
-      Math.abs(py - (y + rh)) <= 10 ||
-      Math.abs(px - x) <= 10 ||
-      Math.abs(px - (x + rw)) <= 10
-    )
-  }
-  if (a.type === 'ellipse') {
-    const x = Math.min(a.x0 ?? 0, a.x1 ?? 0) * w
-    const y = Math.min(a.y0 ?? 0, a.y1 ?? 0) * h
-    const rw = Math.abs((a.x1 ?? 0) - (a.x0 ?? 0)) * w
-    const rh = Math.abs((a.y1 ?? 0) - (a.y0 ?? 0)) * h
-    const cx = x + rw / 2
-    const cy = y + rh / 2
-    const rx = Math.max(0.5, rw / 2)
-    const ry = Math.max(0.5, rh / 2)
-    const d = ((px - cx) / rx) ** 2 + ((py - cy) / ry) ** 2
-    return d >= 0.75 && d <= 1.25
+    // Shapes intentionally use a generous hit box: touch/clicking inside a shape selects it.
+    return px >= x - tolerance && px <= x + rw + tolerance && py >= y - tolerance && py <= y + rh + tolerance
   }
   if ((a.type === 'brush' || a.type === 'highlighter') && a.points && a.points.length >= 2) {
     for (let i = 1; i < a.points.length; i++) {
-      if (
-        distToSegment(
-          px,
-          py,
-          a.points[i - 1].x * w,
-          a.points[i - 1].y * h,
-          a.points[i].x * w,
-          a.points[i].y * h,
-        ) <= 12 + extraTolerance
-      )
-        return true
+      if (distToSegment(px, py, a.points[i - 1].x * w, a.points[i - 1].y * h, a.points[i].x * w, a.points[i].y * h) <= tolerance) return true
     }
   }
   return false
 }
-
 function eraseStrokeAtPoint(a, px, py, w, h, radius) {
   if (!(a.type === 'brush' || a.type === 'highlighter') || !a.points || a.points.length < 2) return [a]
   const thickness = Math.max(1, Number(a.thickness) || 3) / 2
@@ -310,23 +296,15 @@ function eraseStrokeAtPoint(a, px, py, w, h, radius) {
   for (let i = 1; i < a.points.length; i++) {
     const p0 = a.points[i - 1]
     const p1 = a.points[i]
-    const x0 = p0.x * w
-    const y0 = p0.y * h
-    const x1 = p1.x * w
-    const y1 = p1.y * h
-    const distance = Math.hypot(x1 - x0, y1 - y0)
-    const steps = Math.max(1, Math.ceil(distance / 4))
-    for (let step = 0; step <= steps; step++) {
-      if (i > 1 && step === 0) continue
-      const t = step / steps
-      const point = { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t }
-      const d = Math.hypot(point.x * w - px, point.y * h - py)
-      if (d <= radius + thickness) {
-        erased = true
-        flush()
-      } else {
-        current.push(point)
-      }
+    // One segment-distance check is enough here; dense interpolation per pointer event
+    // made pixel erasing disproportionately expensive on long strokes.
+    const hit = distToSegment(px, py, p0.x * w, p0.y * h, p1.x * w, p1.y * h) <= radius + thickness
+    if (hit) {
+      erased = true
+      flush()
+    } else {
+      if (!current.length) current.push(p0)
+      current.push(p1)
     }
   }
   flush()
@@ -2009,11 +1987,11 @@ function useAnnotTools({ annKey, entry, notify }) {
         if (result.changed) {
           eraserSessionRef.current.changed = true
           annRef.current = { ...annRef.current, [annKey]: result.list }
-          setAnnotations(annRef.current)
+          paint()
         }
         return
       }
-      if (tool === 'selectAnnot') {
+      if (tool === 'select' || tool === 'selectAnnot') {
         const point = getPoint(e)
         const el = overlayRef.current
         const rect = el?.getBoundingClientRect()
@@ -2095,7 +2073,8 @@ function useAnnotTools({ annKey, entry, notify }) {
             if (result.changed) {
               eraserSessionRef.current.changed = true
               annRef.current = { ...annRef.current, [annKey]: result.list }
-              setAnnotations(annRef.current)
+              // Keep the drag path out of React's render loop; paint the canvas directly.
+              paint()
             }
           })
         }
@@ -2352,7 +2331,7 @@ function useAnnotTools({ annKey, entry, notify }) {
 /** 批注覆盖层：画布 + DOM 批注（文本框/批注标记/草稿），放在内容容器上方 */
 function AnnotOverlay({ t }) {
   // 画布只在「画笔/荧光笔/选择批注」时接收事件；默认「选择文字」模式不拦截，文字可选中
-  const canvasActive = t.tool === 'pen' || t.tool === 'highlighter' || t.tool === 'eraser' || t.tool === 'selectAnnot'
+  const canvasActive = t.tool === 'pen' || t.tool === 'highlighter' || t.tool === 'eraser' || t.tool === 'select' || t.tool === 'selectAnnot'
   const domActive = t.tool === 'text' || t.tool === 'comment'
   return (
     <>
@@ -2367,7 +2346,7 @@ function AnnotOverlay({ t }) {
         onPointerUp={canvasActive ? t.handleOverlayUp : undefined}
       />
       <div
-        className={`ann-dom ${domActive ? 'active' : ''}`}
+        className={`ann-dom ${domActive || t.selectedId ? 'active' : ''}`}
         onPointerDown={domActive ? t.handleDomDown : undefined}
         onPointerMove={domActive ? t.handleDomMove : undefined}
         onPointerUp={domActive ? t.handleDomUp : undefined}
@@ -2402,6 +2381,27 @@ function AnnotOverlay({ t }) {
             </span>
           </div>
         )}
+        {t.selectedId && t.list
+          .filter((a) => a.id === t.selectedId && a.type !== 'text' && a.type !== 'comment')
+          .map((a) => {
+            const b = annotationBounds(a)
+            if (!b) return null
+            return (
+              <button
+                key={"shape-delete-" + a.id}
+                className="shape-delete"
+                title="删除图形"
+                style={{ left: (b.x + b.w) * 100 + '%', top: b.y * 100 + '%' }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  t.deleteAnn(a.id)
+                }}
+              >
+                <X size={14} />
+              </button>
+            )
+          })}
         {t.list
           .filter((a) => a.type === 'text')
           .map((a) => (

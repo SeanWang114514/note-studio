@@ -56,7 +56,13 @@ export const OCR_MODELS = [
 
 /** 本地模型资源表：直接指向项目内置的 public/models/ 下的 tar 包。 */
 function modelAssetUrl(file) {
-  return new URL('/models/' + file, window.location.href).href
+  return new URL('./models/' + file, document.baseURI).href
+}
+
+export function getDefaultOcrModel() {
+  const platform = window.Capacitor?.getPlatform?.()
+  const isAndroid = platform === 'android' || /Android/i.test(navigator.userAgent)
+  return isAndroid ? 'ppocr-v5-mobile' : 'ppocr-v6'
 }
 
 const MODEL_ASSETS = {
