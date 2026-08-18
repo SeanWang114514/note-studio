@@ -1028,6 +1028,45 @@ button:disabled {
   z-index: 5;
 }
 
+.shape-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+}
+
+.shape-move-area {
+  position: absolute;
+  z-index: 1;
+  min-width: 24px;
+  min-height: 24px;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+
+.shape-handle {
+  position: absolute;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 2px solid #2383e2;
+  border-radius: 50%;
+  background: #fff;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.shape-handle-tl { cursor: nwse-resize; }
+.shape-handle-br { cursor: nwse-resize; }
+.shape-handle-tr { cursor: nesw-resize; }
+.shape-handle-bl { cursor: nesw-resize; }
+.shape-handle-tl { left: 0; top: 0; transform: translate(-50%, -50%); }
+.shape-handle-tr { right: 0; top: 0; transform: translate(50%, -50%); }
+.shape-handle-bl { left: 0; bottom: 0; transform: translate(-50%, 50%); }
+.shape-handle-br { right: 0; bottom: 0; transform: translate(50%, 50%); }
+
 .shape-delete {
   position: absolute;
   z-index: 8;

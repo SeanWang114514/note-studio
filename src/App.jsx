@@ -214,6 +214,34 @@ function annotationBounds(a) {
   return null
 }
 
+function transformAnnotation(a, original, dx, dy, handle) {
+  const minSize = 0.015
+  let x = original.bounds.x
+  let y = original.bounds.y
+  let right = x + original.bounds.w
+  let bottom = y + original.bounds.h
+  if (handle === 'move') {
+    const moveX = Math.max(-x, Math.min(1 - right, dx))
+    const moveY = Math.max(-y, Math.min(1 - bottom, dy))
+    x += moveX
+    y += moveY
+    right += moveX
+    bottom += moveY
+  } else {
+    if (handle.includes('l')) x = Math.max(0, Math.min(right - minSize, x + dx))
+    if (handle.includes('r')) right = Math.min(1, Math.max(x + minSize, right + dx))
+    if (handle.includes('t')) y = Math.max(0, Math.min(bottom - minSize, y + dy))
+    if (handle.includes('b')) bottom = Math.min(1, Math.max(y + minSize, bottom + dy))
+  }
+  const oldW = Math.max(minSize, original.bounds.w)
+  const oldH = Math.max(minSize, original.bounds.h)
+  const sx = (right - x) / oldW
+  const sy = (bottom - y) / oldH
+  const map = (p) => ({ x: x + (p.x - original.bounds.x) * sx, y: y + (p.y - original.bounds.y) * sy })
+  if (a.points) return { ...a, points: original.points.map(map) }
+  return { ...a, x0: map({ x: original.a.x0 ?? 0, y: original.a.y0 ?? 0 }).x, y0: map({ x: original.a.x0 ?? 0, y: original.a.y0 ?? 0 }).y, x1: map({ x: original.a.x1 ?? 0, y: original.a.y1 ?? 0 }).x, y1: map({ x: original.a.x1 ?? 0, y: original.a.y1 ?? 0 }).y }
+}
+
 function drawShapeSelection(ctx, a, w, h) {
   const pts = []
   if (a.type === 'line' || a.type === 'rect' || a.type === 'ellipse') {
@@ -1747,6 +1775,7 @@ function useAnnotTools({ annKey, entry, notify }) {
   const eraserCursorRef = useRef(null)
   const drawFrameRef = useRef(null)
   const textDragRef = useRef(null)
+  const transformRef = useRef(null)
   const cancelEditRef = useRef(false)
   const saveTimer = useRef(null)
   const draftRef = useRef(null)
@@ -1929,6 +1958,25 @@ function useAnnotTools({ annKey, entry, notify }) {
     },
     [commit, annKey],
   )
+
+  const previewTransform = useCallback(
+    (id, original, dx, dy, handle) => {
+      const next = (annRef.current[annKey] || []).map((a) =>
+        a.id === id ? transformAnnotation(a, original, dx, dy, handle) : a,
+      )
+      annRef.current = { ...annRef.current, [annKey]: next }
+      setAnnotations(annRef.current)
+      paint()
+    },
+    [annKey, paint],
+  )
+
+  const finishTransform = useCallback(() => {
+    const session = transformRef.current
+    if (!session) return
+    transformRef.current = null
+    if (session.changed) commit(annRef.current[annKey] || [], session.before)
+  }, [annKey, commit])
 
   const deleteAnn = useCallback(
     (id) => {
@@ -2281,6 +2329,7 @@ function useAnnotTools({ annKey, entry, notify }) {
     list,
     setList: commit,
     annRef,
+    annKey,
     tool,
     setTool,
     pen,
@@ -2317,6 +2366,9 @@ function useAnnotTools({ annKey, entry, notify }) {
     commitComment,
     deleteAnn,
     updateAnn,
+    previewTransform,
+    finishTransform,
+    transformRef,
     selectComment,
     handleOverlayDown,
     handleOverlayMove,
@@ -2346,7 +2398,7 @@ function AnnotOverlay({ t }) {
         onPointerUp={canvasActive ? t.handleOverlayUp : undefined}
       />
       <div
-        className={`ann-dom ${domActive || t.selectedId ? 'active' : ''}`}
+        className={`ann-dom ${domActive ? 'active' : ''}`}
         onPointerDown={domActive ? t.handleDomDown : undefined}
         onPointerMove={domActive ? t.handleDomMove : undefined}
         onPointerUp={domActive ? t.handleDomUp : undefined}
@@ -2386,20 +2438,53 @@ function AnnotOverlay({ t }) {
           .map((a) => {
             const b = annotationBounds(a)
             if (!b) return null
+            const beginTransform = (e, handle) => {
+              e.stopPropagation()
+              e.preventDefault()
+              e.currentTarget.setPointerCapture(e.pointerId)
+              const original = { a, bounds: b, points: a.points?.map((p) => ({ ...p })) }
+              t.transformRef.current = { id: a.id, before: t.annRef.current[t.annKey] || [], original, startX: e.clientX, startY: e.clientY, handle, changed: false }
+            }
+            const moveTransform = (e) => {
+              const s = t.transformRef.current
+              if (!s || s.id !== a.id) return
+              const rect = e.currentTarget.parentElement.getBoundingClientRect()
+              const dx = (e.clientX - s.startX) / rect.width
+              const dy = (e.clientY - s.startY) / rect.height
+              if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) s.changed = true
+              t.previewTransform(a.id, s.original, dx, dy, s.handle)
+            }
+            const endTransform = () => t.finishTransform()
             return (
-              <button
-                key={"shape-delete-" + a.id}
-                className="shape-delete"
-                title="删除图形"
-                style={{ left: (b.x + b.w) * 100 + '%', top: b.y * 100 + '%' }}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  t.deleteAnn(a.id)
-                }}
-              >
-                <X size={14} />
-              </button>
+              <div key={"shape-controls-" + a.id} className="shape-controls">
+                <div
+                  className="shape-move-area"
+                  title="拖动移动图形"
+                  style={{ left: b.x * 100 + '%', top: b.y * 100 + '%', width: b.w * 100 + '%', height: b.h * 100 + '%' }}
+                  onPointerDown={(e) => beginTransform(e, 'move')}
+                  onPointerMove={moveTransform}
+                  onPointerUp={endTransform}
+                />
+                {['tl', 'tr', 'bl', 'br'].map((handle) => (
+                  <button
+                    key={handle}
+                    className={'shape-handle shape-handle-' + handle}
+                    title="拖动缩放图形"
+                    onPointerDown={(e) => beginTransform(e, handle)}
+                    onPointerMove={moveTransform}
+                    onPointerUp={endTransform}
+                  />
+                ))}
+                <button
+                  className="shape-delete"
+                  title="删除图形"
+                  style={{ left: (b.x + b.w) * 100 + '%', top: b.y * 100 + '%' }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); t.deleteAnn(a.id) }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
             )
           })}
         {t.list
