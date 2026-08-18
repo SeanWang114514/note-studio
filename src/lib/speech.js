@@ -61,7 +61,20 @@ export function loadSpeechSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULT_SETTINGS }
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+    const settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+    // 旧版本可能保存了 /models/... 或 file://... 地址；迁移到当前应用协议，
+    // 否则打包后的 Electron 页面会把模型误判为缺失。
+    const saved = String(settings.voskModelUrl || '').replace(/\\/g, '/')
+    if (
+      !saved ||
+      saved === '/models/vosk-model-small-cn-0.22.tar.gz' ||
+      saved === './models/vosk-model-small-cn-0.22.tar.gz' ||
+      saved === 'models/vosk-model-small-cn-0.22.tar.gz' ||
+      (saved.includes('/models/vosk-model-small-cn-0.22.tar.gz') && !/^https?:\/\//i.test(saved))
+    ) {
+      settings.voskModelUrl = getVoskModelUrl()
+    }
+    return settings
   } catch {
     return { ...DEFAULT_SETTINGS }
   }

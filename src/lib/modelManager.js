@@ -94,10 +94,14 @@ function findLocalVoskModel() {
   return null // 改由 fetch 探测
 }
 
-/** 通过 HTTP 探测本地模型是否可访问 */
+function bundledVoskUrl() {
+  return new URL('./models/vosk-model-small-cn-0.22.tar.gz', document.baseURI).href
+}
+
+/** 通过应用协议探测随 EXE/APK 分发的模型是否可访问。 */
 export async function probeLocalVosk() {
   try {
-    const res = await fetch(new URL('./models/vosk-model-small-cn-0.22.tar.gz', document.baseURI).href, { method: 'HEAD', signal: AbortSignal.timeout(3000) })
+    const res = await fetch(bundledVoskUrl(), { method: 'HEAD', signal: AbortSignal.timeout(5000) })
     if (res.ok) {
       return { available: true, sizeBytes: parseInt(res.headers.get('content-length') || '0', 10) }
     }
@@ -140,16 +144,25 @@ export function updateVoskModelUrl(url) {
   }
 }
 
-/** 获取当前 Vosk 模型 URL */
+/** 获取当前 Vosk 模型 URL。旧版本保存的 /models 路径必须迁移到内置协议地址。 */
 export function getVoskModelUrl() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
-    const bundled = new URL('./models/vosk-model-small-cn-0.22.tar.gz', document.baseURI).href
+    const bundled = bundledVoskUrl()
     if (!raw) return bundled
     const s = JSON.parse(raw)
-    return s.voskModelUrl || bundled
+    const saved = String(s.voskModelUrl || '').trim()
+    if (!saved) return bundled
+    const normalized = saved.replace(/\\/g, '/')
+    const isLegacyBundled =
+      normalized === '/models/vosk-model-small-cn-0.22.tar.gz' ||
+      normalized === './models/vosk-model-small-cn-0.22.tar.gz' ||
+      normalized === 'models/vosk-model-small-cn-0.22.tar.gz' ||
+      (normalized.includes('/models/vosk-model-small-cn-0.22.tar.gz') &&
+        !/^https?:\/\//i.test(normalized))
+    return isLegacyBundled ? bundled : saved
   } catch {
-    return './models/vosk-model-small-cn-0.22.tar.gz'
+    return bundledVoskUrl()
   }
 }
 
