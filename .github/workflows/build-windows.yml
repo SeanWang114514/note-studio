@@ -1,5 +1,8 @@
 name: Build Windows executable
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -27,3 +30,8 @@ jobs:
           name: note-studio-windows
           path: release/*.exe
           if-no-files-found: error
+      - name: Publish EXE to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe

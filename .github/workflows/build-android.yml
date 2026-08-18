@@ -1,5 +1,8 @@
 name: Build Android APK
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -25,10 +28,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build release APK
-        run: npm run android:build:release
+        run: npm run build && npx cap sync android && cd android && ./gradlew assembleRelease
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: note-studio-android
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+      - name: Publish APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/release/*.apk
