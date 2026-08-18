@@ -27,7 +27,7 @@ jobs:
       - run: npx cap sync android
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: chmod +x gradlew && ./gradlew assembleDebug
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
