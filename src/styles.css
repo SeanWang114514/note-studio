@@ -3521,3 +3521,28 @@ button:disabled {
     transform: rotate(360deg);
   }
 }
+
+/* Mobile / touch layout */
+@media (max-width: 760px) {
+  :root { font-size: 15px; }
+  body { overflow: hidden; overscroll-behavior: none; }
+  .app { min-height: 100dvh; position: relative; }
+  .sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: min(86vw, 320px); transform: translateX(-102%); transition: transform .2s ease; box-shadow: 12px 0 32px rgba(0,0,0,.14); padding-bottom: env(safe-area-inset-bottom); }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .main { width: 100%; min-width: 0; }
+  .tabbar { height: 50px; padding: 0 8px; padding-top: env(safe-area-inset-top); }
+  .tab { min-width: 150px; height: 36px; }
+  .content { -webkit-overflow-scrolling: touch; }
+  .home { padding: 28px 16px 64px; }
+  .home-header h1 { font-size: 21px; }
+  .toolbar, .editor-toolbar, .pdf-toolbar, .document-toolbar { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+  .toolbar::-webkit-scrollbar, .editor-toolbar::-webkit-scrollbar, .pdf-toolbar::-webkit-scrollbar, .document-toolbar::-webkit-scrollbar { display: none; }
+  button, .nav-item, .tree-row, .tab-close, input, select, textarea { min-height: 40px; }
+  .icon-button, .tool-button { min-width: 40px; min-height: 40px; }
+  .pdf-viewer, .pdf-scroll, .document-view { touch-action: pan-x pan-y; }
+  .modal { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); margin: 12px; }
+  .modal-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .table-wrap, .excel-grid-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mobile-menu-button { display: inline-flex !important; }
+}
+@media (min-width: 761px) { .mobile-menu-button { display: none !important; } }

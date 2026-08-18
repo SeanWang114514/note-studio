@@ -564,6 +564,7 @@ export default function App() {
   const toastTimer = useRef(null)
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const notify = useCallback((message, type = 'info') => {
     setToast({ message, type })
@@ -668,8 +669,9 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <aside className={`sidebar ${mobileMenuOpen ? 'mobile-open' : ''}`}>
         <div className="sidebar-brand">
+          <button className="mobile-menu-button icon-btn" onClick={() => setMobileMenuOpen(false)} aria-label="关闭菜单"><X size={18} /></button>
           <PenLine size={17} color="#2383e2" />
           <span>笔记工作台</span>
           <em>Web MVP</em>
@@ -681,7 +683,7 @@ export default function App() {
         <nav className="side-nav">
           <button
             className={`nav-item ${activeTab.kind === 'home' ? 'active' : ''}`}
-            onClick={() => selectTab('home')}
+            onClick={() => { selectTab('home'); setMobileMenuOpen(false) }}
           >
             <Home size={16} />
             <span>欢迎页</span>
@@ -722,7 +724,7 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
-        <TabBar tabs={tabs} activeId={activeTabId} onSelect={selectTab} onClose={closeTab} />
+        <TabBar tabs={tabs} activeId={activeTabId} onSelect={selectTab} onClose={closeTab} onMenu={() => setMobileMenuOpen(true)} />
         <div className="content">
           {activeTab.kind === 'home' ? (
             <HomeView recent={recent} onOpenRecent={openRecent} onPickFiles={handlePickFiles} />
@@ -745,9 +747,10 @@ export default function App() {
   )
 }
 
-function TabBar({ tabs, activeId, onSelect, onClose }) {
+function TabBar({ tabs, activeId, onSelect, onClose, onMenu }) {
   return (
     <div className="tabbar">
+      <button className="mobile-menu-button icon-btn" onClick={onMenu} aria-label="打开菜单"><SlidersHorizontal size={18} /></button>
       {tabs.map((tab) => {
         const meta = tab.kind === 'file' ? TYPE_META[tab.type] : null
         const Icon = tab.kind === 'home' ? Home : meta?.icon || FileIcon

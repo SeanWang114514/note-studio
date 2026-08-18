@@ -12,9 +12,12 @@
     "preview": "vite preview",
     "convert": "python server/convert_server.py --port 5198",
     "electron:dev": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win portable"
+    "dist:win": "npm run build && electron-builder --win portable",
+    "android:build": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
     "@paddleocr/paddleocr-js": "^0.4.2",
     "docx": "^9.7.1",
     "lucide-react": "^0.468.0",
@@ -28,6 +31,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.4.3",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "36.4.0",
     "electron-builder": "26.0.12",
