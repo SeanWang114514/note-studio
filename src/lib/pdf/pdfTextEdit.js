@@ -258,18 +258,42 @@ function sampleTextColor(span) {
     const r = span.getBoundingClientRect()
     const cr = canvas.getBoundingClientRect()
     if (!r.width || !cr.width) return '#1f1f1f'
-    const x = Math.min(
-      canvas.width - 2,
-      Math.max(1, ((r.left + r.width / 2 - cr.left) / cr.width) * canvas.width),
-    )
-    const y = Math.min(
-      canvas.height - 2,
-      Math.max(1, ((r.top + r.height / 2 - cr.top) / cr.height) * canvas.height),
-    )
-    const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data
-    if (d[3] < 40) return '#1f1f1f' // 透明像素（可能是背景）
-    const hex = ((1 << 24) + (d[0] << 16) + (d[1] << 8) + d[2]).toString(16).slice(1)
-    return '#' + hex
+    const sx = (px) =>
+      Math.min(canvas.width - 2, Math.max(1, ((px - cr.left) / cr.width) * canvas.width))
+    const sy = (py) =>
+      Math.min(canvas.height - 2, Math.max(1, ((py - cr.top) / cr.height) * canvas.height))
+
+    // 在 span 区域内采样多点（3×3 网格 + 垂直中线），取「非白中最暗」的颜色。
+    // 只采中心一点会落在文字间隙/白色背景上 → 误判为白色 → 编辑框文字不可见。
+    let best = null // { lum, hex }
+    const sample = (px, py) => {
+      const d = ctx.getImageData(Math.floor(sx(px)), Math.floor(sy(py)), 1, 1).data
+      if (d[3] < 60) return // 透明像素跳过
+      // 亮度：接近白色的像素跳过（背景）
+      const lum = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]
+      if (lum > 235) return
+      const hex = ((1 << 24) + (d[0] << 16) + (d[1] << 8) + d[2]).toString(16).slice(1)
+      if (!best || lum < best.lum) best = { lum, hex }
+    }
+
+    // 3×3 网格
+    for (let gy = 0; gy < 3; gy++) {
+      for (let gx = 0; gx < 3; gx++) {
+        const px = r.left + (r.width * (gx + 0.5)) / 3
+        const py = r.top + (r.height * (gy + 0.5)) / 3
+        sample(px, py)
+      }
+    }
+    // 垂直中线多点（密集采样提高命中文字笔画的概率）
+    for (let i = 0; i < 7; i++) {
+      sample(r.left + r.width / 2, r.top + (r.height * (i + 0.5)) / 7)
+    }
+    // 水平中线多点
+    for (let i = 0; i < 7; i++) {
+      sample(r.left + (r.width * (i + 0.5)) / 7, r.top + r.height / 2)
+    }
+
+    return best ? '#' + best.hex : '#1f1f1f'
   } catch {
     return '#1f1f1f'
   }

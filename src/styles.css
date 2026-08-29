@@ -840,12 +840,9 @@ button:disabled {
 }
 
 .pdf-text-layer span.edited {
-  /* 编辑确认后由 applyDivStyle 设内联 color 显示新文字；
-     这里保证继承内联色并加白色背景遮住 PDF 原文（配合 pdf-edit-canvas 白底） */
-  color: inherit;
-  background: #ffffff;
-  outline: 1px dashed rgba(35, 131, 226, 0.45);
-  outline-offset: 1px;
+  /* 已编辑标记：文字透明（新文字由 pdf-edit-canvas 绘制）。
+     不显示虚线框——提交后应像 Acrobat 一样干净，避免「全包」观感 */
+  color: transparent;
 }
 
 .pdf-text-layer span.editing {

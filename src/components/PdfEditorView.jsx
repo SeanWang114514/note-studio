@@ -231,10 +231,15 @@ export default function PdfEditorView({ entry, notify }) {
       ? existing.font || cssFamilyFor(block.actualFontName, block.fontFamily)
       : cssFamilyFor(block.actualFontName, block.fontFamily)
 
+    // 采样颜色兜底：若为白色/接近白色（采样落在背景），回退深色默认
+    let sampledColor = existing?.color || block.color || '#1f1f1f'
+    const isWhite = /^#(f[0-9a-f]{5}|[0-9a-f]{2,2}fffff)/i.test(sampledColor) || sampledColor === '#ffffff' || sampledColor === '#fff'
+    if (isWhite) sampledColor = '#1f1f1f'
+
     const fmt = {
       font: cssFamily,
       size: cssSize,
-      color: existing?.color || block.color || '#1f1f1f',
+      color: sampledColor,
       bold: existing ? !!existing.bold : block.isBold,
       italic: existing ? !!existing.italic : block.isItalic,
       underline: existing ? !!existing.underline : false,
