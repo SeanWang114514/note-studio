@@ -758,6 +758,9 @@ export default function PdfEditorView({ entry, notify }) {
         >
           {linesArr.map((ln, i) => {
             const sx = scaleXs[i] && scaleXs[i] !== 1 ? scaleXs[i] : null
+            // 行距：每行行盒高度 = 字号（顶对齐原文），后续行用 marginTop 补足 PDF 行距。
+            // 之前 lineHeight:'1' 让所有行挤在同一高度 → 多行文字视觉上重叠成一行（用户反馈的"显示不匹配"）。
+            const lineGap = Math.max(0, (editing.lineSpacing || fmt.size * 1.2) - fmt.size)
             return (
               <div
                 key={i}
@@ -767,6 +770,8 @@ export default function PdfEditorView({ entry, notify }) {
                   transform: sx ? 'scaleX(' + sx + ')' : undefined,
                   whiteSpace: 'pre',
                   minHeight: fmt.size + 'px',
+                  lineHeight: fmt.size + 'px',
+                  marginTop: i > 0 ? lineGap + 'px' : undefined,
                 }}
               >
                 {ln}
