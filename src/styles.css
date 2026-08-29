@@ -3587,6 +3587,7 @@ button:disabled {
 /* Mobile / touch layout */
 @media (max-width: 760px) {
   :root { font-size: 15px; }
+  html, body, #root { width: 100%; max-width: 100%; overflow-x: hidden; }
   body { overflow: hidden; overscroll-behavior: none; }
   .app { min-height: 100dvh; position: relative; }
   .sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: min(86vw, 320px); transform: translateX(-102%); transition: transform .2s ease; box-shadow: 12px 0 32px rgba(0,0,0,.14); padding-bottom: env(safe-area-inset-bottom); }
@@ -3604,7 +3605,315 @@ button:disabled {
   .pdf-viewer, .pdf-scroll, .document-view { touch-action: pan-x pan-y; }
   .modal { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); margin: 12px; }
   .modal-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .ocr-overlay, .speech-overlay, .model-modal-overlay { padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)); align-items: flex-start; overflow-y: auto; }
+  .ocr-modal, .speech-modal, .model-modal, .settings-modal { width: 100%; max-width: 100%; max-height: calc(100dvh - 16px); margin: 0; }
+  .ocr-body, .speech-body, .model-modal-body, .settings-body { min-width: 0; padding: 10px; }
+  .ocr-controls, .speech-config-row { width: 100%; gap: 8px; }
+  .ocr-model-box, .speech-config-row .ocr-model-box { min-width: 0; width: 100%; flex-basis: 100%; }
+  .ocr-select, .speech-input { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .ocr-actions, .speech-actions, .model-card-actions { width: 100%; justify-content: stretch; flex-wrap: wrap; }
+  .ocr-actions .tool-btn, .speech-actions .tool-btn, .model-card-actions .tool-btn { flex: 1 1 auto; min-width: 0; }
+  .model-card { align-items: flex-start; flex-direction: column; }
+  .model-card-actions { flex-shrink: 1; }
+  .open-pdf-studio-status { flex-wrap: wrap; gap: 4px 8px; padding: 6px 8px; }
+  .open-pdf-studio-hint { width: 100%; margin-left: 0; white-space: normal; }
   .table-wrap, .excel-grid-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .mobile-menu-button { display: inline-flex !important; }
 }
 @media (min-width: 761px) { .mobile-menu-button { display: none !important; } }
+
+.pdf-direct-shell { display: contents; }
+.open-pdf-studio-shell { display:flex; flex-direction:column; min-height:0; height:100%; background:#f4f5f7; }
+.open-pdf-studio-status { display:flex; align-items:center; gap:10px; flex:0 0 auto; min-height:34px; padding:6px 14px; border-bottom:1px solid var(--border); background:var(--bg); font-size:12px; color:var(--text-secondary); }
+.open-pdf-studio-brand { font-weight:700; color:var(--text); }
+.open-pdf-studio-hint { margin-left:auto; color:var(--text-muted); }
+.open-pdf-studio-frame { display:block; flex:1 1 auto; width:100%; min-height:0; border:0; background:#f5f5f5; }
+.open-pdf-studio-recognition-bar { display:flex; gap:8px; align-items:center; padding:6px 12px; border-bottom:1px solid var(--border); background:#fff; }
+.open-pdf-studio-recognition-bar button { border:1px solid #cfd6df; background:#fff; color:#263445; padding:6px 12px; cursor:pointer; font-size:12px; }
+.pdf-service-banner { margin: 8px 18px 0; padding: 7px 12px; border-radius: 8px; font-size: 12px; color: #8a5a00; background: #fff7e6; border: 1px solid #f5d08a; }
+.pdf-service-banner.connected { color: #176b3a; background: #edf9f1; border-color: #a9dfbb; }
+.pdf-service-banner.offline { color: #8a5a00; background: #fff7e6; border-color: #f5d08a; }
+.pdf-service-link { margin-left: 10px; color: #1a6fb5; text-decoration: none; font-weight: 600; }
+.pdf-service-link:hover { text-decoration: underline; }
+
+/* ─── PdfEditorView（React 原生 PDF 编辑器）─── */
+.pdf-viewer-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #f4f5f7;
+}
+
+.pdf-viewer-shell .pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #ffffff;
+  flex-wrap: wrap;
+}
+
+.pdf-viewer-shell .pdf-zoom-pct {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pdf-viewer-shell .pdf-toolbar .toolbar-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pdf-viewer-shell .pdf-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pdf-viewer-shell .pdf-viewer {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-viewer-shell .pdf-scroll {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  background: #f4f5f7;
+}
+
+.pdf-viewer-shell .pdf-pages {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 16px 90px;
+}
+
+.pdf-viewer-shell .pdf-page {
+  position: relative;
+}
+
+.pdf-viewer-shell .pdf-canvas-container {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 15, 15, 0.12);
+}
+
+.pdf-viewer-shell .pdf-canvas {
+  display: block;
+  position: relative;
+  z-index: 0;
+}
+
+.pdf-viewer-shell .pdf-edit-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pdf-viewer-shell .pdf-text-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  overflow: hidden;
+  line-height: 1;
+  transform-origin: 0 0;
+  display: block;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  --scale-factor: 1;
+  --total-scale-factor: 1;
+}
+
+.pdf-viewer-shell .pdf-text-layer span[data-page] {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 编辑模式：整段高亮提示（hover 显示淡蓝框，表示点击即可编辑） */
+.pdf-viewer-shell.edit-mode .pdf-text-layer span[data-page]:hover {
+  background: rgba(35, 131, 226, 0.12);
+  outline: 1px solid rgba(35, 131, 226, 0.35);
+  outline-offset: 1px;
+}
+
+/* 跨行多选的选区高亮：用浏览器原生 ::selection（透明文字） */
+.pdf-viewer-shell .pdf-text-layer span[data-page]::selection {
+  background: rgba(35, 131, 226, 0.32);
+}
+
+/* 编辑中的文字层：隐藏底层 span，编辑框盖在上面 */
+.pdf-viewer-shell .pdf-text-layer.editing-layer span[data-page] {
+  color: transparent;
+}
+
+.pdf-viewer-shell .pdf-link-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* 浮动页码/缩放控制条（open-pdf-studio 风格深色胶囊） */
+.pdf-page-controls {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 14px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-radius: 18px;
+  background: rgba(31, 41, 55, 0.92);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  color: #e5e7eb;
+  font-size: 12px;
+  user-select: none;
+}
+
+.pdf-page-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  color: #e5e7eb;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.pdf-page-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.pdf-page-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pdf-page-controls .pdf-page-label {
+  min-width: 34px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.pdf-page-controls .pdf-page-controls-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 内联文字编辑覆盖层（Acrobat 风格：白底覆盖原文，无边框） */
+.pdf-inline-editor-pos {
+  position: absolute;
+  z-index: 20;
+  cursor: text;
+  box-shadow: 0 0 0 1px rgba(35, 131, 226, 0.35);
+  border-radius: 1px;
+}
+
+.pdf-inline-editor {
+  position: absolute;
+  inset: 0;
+  min-width: 40px;
+  padding: 0;
+  border: none;
+  background: #ffffff;
+  outline: none;
+  white-space: pre-wrap;
+  overflow: visible;
+  cursor: text;
+  caret-color: #1f1f1f;
+  user-select: text;
+  -webkit-user-select: text;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.pdf-inline-editor::selection {
+  background: rgba(35, 131, 226, 0.32);
+}
+
+/* 编辑格式条（复用旧 .pdf-edit-bar 基座，补全 select 样式） */
+.pdf-edit-bar select {
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+.pdf-edit-bar select:focus {
+  border-color: var(--accent);
+}
+
+.pdf-edit-bar .pdf-edit-font {
+  max-width: 130px;
+  padding: 0 4px;
+}
+
+.pdf-edit-bar .pdf-edit-size {
+  min-width: 44px;
+  padding: 0 2px;
+}
+
+.pdf-edit-bar .pdf-edit-color {
+  background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+}
+
+.pdf-edit-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pdf-edit-bar button:hover {
+  background: var(--bg-hover);
+}
+
+.pdf-edit-bar button.active {
+  background: var(--bg-active);
+  color: var(--accent);
+}

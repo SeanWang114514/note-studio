@@ -17,7 +17,7 @@
 // 转到 PDF 用户空间（原点左下，含旋转/CropBox/Y 翻转处理）；读回用
 // convertToViewportPoint 逆变换。文字仍受 Helvetica(WinAnsi) 限制：中文被过滤。
 
-import { PDFDocument, PDFName, PDFString, PDFArray, PDFRef } from 'pdf-lib'
+import { PDFDocument, PDFName, PDFString, PDFArray, PDFRef, rgb, degrees } from 'pdf-lib'
 
 /** 本应用接管（会替换）的注释子类型 */
 const HANDLED_SUBTYPES = new Set([
@@ -547,6 +547,141 @@ export async function loadPdfAnnotationsFromBytes(pdfJsDoc, bytes, pageCount) {
 function rgbToHex(arr) {
   if (!arr || arr.length < 3) return '#1f1f1f'
   return `#${arr.slice(0, 3).map((v) => Math.max(0, Math.min(255, Math.round(Number(v) * 255))).toString(16).padStart(2, '0')).join('')}`
+}
+
+// ─── 文字编辑原生写回：白底覆盖原文 + canvas 渲染新文字为 PNG 嵌入 ──────
+
+/**
+ * 把 canvas 渲染出的编辑文字 PNG 嵌入页面，覆盖 PDF 原文（原生写回）。
+ *
+ * 原理（同 App.jsx paintTextEdits 的"烧进画布"逻辑，但落在 PDF 内容流里）：
+ *   1. 在原文区域画一个白色矩形盖住旧文字；
+ *   2. 用浏览器 canvas 按用户格式（字体/字号/颜色/粗斜体/下划线/对齐）把新文字
+ *      渲染成高清 PNG（任意系统字体都可用，含中文）；
+ *   3. 把 PNG 作为图片嵌入 PDF 并画在原文位置。
+ *
+ * 这样保存后 PDF 文件本身就包含编辑结果，任何阅读器打开都能看到，
+ * 不再依赖旁车 JSON 覆盖层。
+ *
+ * @param {object} pdfJsDoc - pdf.js 文档（viewport 坐标换算用）
+ * @param {Uint8Array|ArrayBuffer} sourceBytes - 原始字节（.slice() 副本）
+ * @param {Array<object>} textEdits - type:'textEdit' 批注列表
+ * @returns {Promise<Uint8Array>} 写回后的新字节
+ */
+export async function writeTextEditsToPdf(pdfJsDoc, sourceBytes, textEdits) {
+  const pdf = await PDFDocument.load(sourceBytes)
+  const edits = (textEdits || []).filter((t) => t && t.type === 'textEdit')
+  if (!edits.length) return pdf.save()
+
+  // 分组：page -> [edits]
+  const byPage = new Map()
+  for (const t of edits) {
+    const p = Number(t.page) || 1
+    if (!byPage.has(p)) byPage.set(p, [])
+    byPage.get(p).push(t)
+  }
+
+  for (const [pageNum, pageEdits] of byPage) {
+    const jsPage = await pdfJsDoc.getPage(pageNum).catch(() => null)
+    if (!jsPage) continue
+    const viewport = jsPage.getViewport({ scale: 1 })
+    const vw = viewport.width
+    const vh = viewport.height
+    const pdfPage = pdf.getPage(pageNum - 1)
+    const pageRotate = (jsPage.rotate || 0) % 360
+
+    for (const t of pageEdits) {
+      // 归一化坐标（左上原点）→ 视口 CSS px
+      const vx = t.x * vw
+      const vy = t.y * vh
+      const wPx = Math.max(1, t.w * vw)
+      const hPx = Math.max(1, t.h * vh)
+      // 视口坐标 → PDF 用户空间（左下原点，convertToPdfPoint 已处理旋转/CropBox）
+      const [px, py] = viewport.convertToPdfPoint(vx, vy)
+
+      // 1) 白底覆盖原文（略放大 0.5pt 防锯齿露边）
+      const pad = 0.5
+      pdfPage.drawRectangle({
+        x: px - pad,
+        y: py - pad,
+        width: wPx + pad * 2,
+        height: hPx + pad * 2,
+        color: rgb(1, 1, 1),
+      })
+
+      // 2) canvas 渲染新文字 → PNG
+      const text = String(t.text ?? '')
+      if (text.trim()) {
+        const pngBytes = await renderTextEditPng(t, wPx, hPx)
+        if (pngBytes) {
+          const image = await pdf.embedPng(pngBytes)
+          // 图片默认以左下角为原点；旋转页面时图片需反向旋转补偿
+          const rotate = pageRotate === 0 ? degrees(0) : degrees(360 - pageRotate)
+          pdfPage.drawImage(image, {
+            x: px,
+            y: py,
+            width: wPx,
+            height: hPx,
+            rotate,
+          })
+        }
+      }
+    }
+  }
+
+  return pdf.save()
+}
+
+/** 用浏览器 canvas 把 textEdit 记录渲染成透明背景 PNG（白底由 PDF 矩形提供） */
+function renderTextEditPng(t, wPx, hPx) {
+  if (typeof document === 'undefined') return Promise.resolve(null)
+  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(2, Math.ceil(wPx * dpr))
+  canvas.height = Math.max(2, Math.ceil(hPx * dpr))
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+
+  // 文字基线：textBaseline 'top'，与 App.jsx paintTextEdits 一致
+  const size = Math.max(4, Number(t.size) || 14)
+  const font = String(t.font || 'Helvetica, Arial, sans-serif')
+  ctx.font = `${t.bold ? '700 ' : ''}${t.italic ? 'italic ' : ''}${size}px ${font}`
+  ctx.fillStyle = t.color || '#1f1f1f'
+  ctx.textBaseline = 'top'
+
+  const txt = String(t.text ?? '')
+  const lines = String(txt).split('\n')
+  const lineHeight = Math.max(4, Number(t.lineSpacing) > 0 ? Number(t.lineSpacing) : size * 1.35)
+  lines.forEach((ln, i) => {
+    const ly = i * lineHeight
+    const m = ctx.measureText(ln)
+    let tx = 0
+    if (t.align === 'center') tx = Math.max(0, (wPx - m.width) / 2)
+    else if (t.align === 'right') tx = Math.max(0, wPx - m.width)
+    // 文字超宽时居中并保留白底覆盖
+    if (m.width > wPx) tx = (wPx - m.width) / 2
+    if (ln) ctx.fillText(ln, tx, ly, m.width > wPx ? wPx : undefined)
+    if (t.underline && ln) {
+      const uy = ly + size + 1.5
+      ctx.beginPath()
+      ctx.moveTo(tx, uy)
+      ctx.lineTo(tx + Math.min(m.width, wPx), uy)
+      ctx.strokeStyle = t.color || '#1f1f1f'
+      ctx.lineWidth = Math.max(1, size / 14)
+      ctx.stroke()
+    }
+  })
+
+  return new Promise((resolve) => {
+    try {
+      canvas.toBlob((blob) => {
+        if (!blob) return resolve(null)
+        blob.arrayBuffer().then((buf) => resolve(new Uint8Array(buf))).catch(() => resolve(null))
+      }, 'image/png')
+    } catch {
+      resolve(null)
+    }
+  })
 }
 
 let _uidCounter = 0

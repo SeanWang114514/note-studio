@@ -94,50 +94,119 @@ export async function renderLowResPreview(pdf, pageNum, scale = 0.5) {
   }
 }
 
+// ─── 字体信息解析（span 还原真实字体名 / 粗斜体，供文字编辑）───
+
+/** 去掉 PDF 子集前缀：NDPKKA+TimesNewRomanPSMT → TimesNewRomanPSMT */
+function stripSubsetPrefix(fontName) {
+  if (!fontName) return ''
+  const plusIdx = fontName.indexOf('+')
+  if (plusIdx >= 0 && plusIdx <= 6) return fontName.substring(plusIdx + 1)
+  return fontName
+}
+
+/** 从字体名后缀解析粗/斜体（-Bold / -Italic / -BoldItalic / -Oblique 等） */
+function parseFontWeight(cleanName) {
+  const name = (cleanName || '').toLowerCase()
+  const bold = name.includes('bold') || name.includes(',bold') || name.endsWith('-bd')
+  const italic =
+    name.includes('italic') || name.includes('oblique') || name.includes(',italic') || name.endsWith('-it')
+  return { bold, italic }
+}
+
+/** 从 page.commonObjs 解析字体对象 → 真实名称 + 粗斜体标志 */
+function resolveFontInfo(page, fontName) {
+  if (!page?.commonObjs || !fontName) return null
+  try {
+    const fontObj = page.commonObjs.get(fontName)
+    if (!fontObj) return null
+    const cleanName = stripSubsetPrefix(fontObj.name || '')
+    const weight = parseFontWeight(cleanName)
+    return {
+      name: cleanName,
+      bold: fontObj.bold === true || weight.bold,
+      italic: fontObj.italic === true || weight.italic,
+    }
+  } catch {
+    return null
+  }
+}
+
 /**
  * 创建文字层（open-pdf-studio createTextLayer）。
  * 直接把传入的 container 当作文字层容器（调用方负责定位样式），
  * 设置 --scale-factor / --total-scale-factor，再用 PDF.js TextLayer
  * 生成绝对定位的透明 span，保证文字可选中、可编辑且与画布精确对齐。
+ *
+ * 每个 span 附加 PDF 数据属性（文字编辑必需）：
+ * - data-pdf-transform : JSON 6 元组 [a,b,c,d,e,f]，PDF 用户空间坐标
+ * - data-pdf-width     : 该项文字宽度（PDF 单位）
+ * - data-pdf-font-name : PDF 字体名（如 g_d0_f1）
+ * - data-pdf-font-family / data-pdf-actual-font-name / data-pdf-bold / data-pdf-italic
+ *
  * @param {object} page - PDF.js 页面对象
  * @param {object} viewport - PDF.js viewport（当前缩放）
  * @param {HTMLElement} container - 文字层容器（class 含 textLayer）
  * @param {number} pageNum
  * @param {(span, index) => void} [onSpanReady] - 每个 span 生成后的回调
- * @returns {Promise<{layer, divs, texts, element}>}
+ * @returns {Promise<{layer, divs, texts, element, textContent}>}
  */
 export async function renderTextLayer(page, viewport, container, pageNum, onSpanReady) {
   container.style.setProperty('--scale-factor', String(viewport.scale))
   container.style.setProperty('--total-scale-factor', String(viewport.scale))
-  container.style.width = `${viewport.width}px`
-  container.style.height = `${viewport.height}px`
+  container.style.width = viewport.width + 'px'
+  container.style.height = viewport.height + 'px'
   container.classList.add('textLayer')
 
   let layer
+  let textContent = null
   try {
+    // 一次取全（含 transform/fontName/width），供 span 附加 PDF 数据
+    textContent = await page.getTextContent()
     layer = new TextLayer({
-      textContentSource: page.streamTextContent({
-        includeMarkedContent: true,
-        disableNormalization: true,
-      }),
+      textContentSource: textContent,
       container,
       viewport,
     })
     await layer.render()
   } catch (err) {
     // 文字层失败不影响页面渲染，保留空层
-    console.warn(`[pdf] text layer page ${pageNum} failed:`, err)
+    console.warn('[pdf] text layer page ' + pageNum + ' failed:', err)
     return { layer: null, divs: [], texts: [], element: container }
   }
 
   const divs = layer.textDivs || []
   const texts = layer.textContentItemsStr || []
+  const items = (textContent?.items || []).filter((it) => it.str !== undefined)
+  const styles = textContent?.styles || {}
+
+  // 字体信息缓存（真实字体名/粗斜体，一次解析）
+  const fontInfoCache = {}
+  for (const it of items) {
+    const fn = it.fontName
+    if (fn && !fontInfoCache[fn]) {
+      const info = resolveFontInfo(page, fn)
+      if (info) fontInfoCache[fn] = info
+    }
+  }
+
   divs.forEach((div, idx) => {
     div.dataset.page = String(pageNum)
     div.dataset.idx = String(idx)
+    const item = items[idx]
+    if (item) {
+      div.dataset.pdfTransform = JSON.stringify(item.transform)
+      div.dataset.pdfWidth = String(item.width || 0)
+      div.dataset.pdfFontName = item.fontName || ''
+      const st = item.fontName ? styles[item.fontName] : null
+      div.dataset.pdfFontFamily = st?.fontFamily || 'sans-serif'
+      const fi = item.fontName ? fontInfoCache[item.fontName] : null
+      div.dataset.pdfActualFontName = fi?.name || ''
+      div.dataset.pdfBold = String(!!fi?.bold)
+      div.dataset.pdfItalic = String(!!fi?.italic)
+    }
     onSpanReady?.(div, idx, texts[idx])
   })
-  return { layer, divs, texts, element: container }
+  return { layer, divs, texts, element: container, textContent }
 }
 
 /**
