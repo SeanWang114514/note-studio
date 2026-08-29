@@ -303,6 +303,24 @@ function sampleTextColor(span) {
 export function cssFamilyFor(actualFontName, pdfFontFamily) {
   const an = (actualFontName || '').toLowerCase()
   const ff = (pdfFontFamily || '').toLowerCase()
+
+  // 中文常见字体（PDF 内嵌宋体/黑体/楷体/仿宋/雅黑 → 本地同名字体）
+  if (an.includes('simsun') || an.includes('songti') || an.includes('song') || an.includes('norrw') || an.includes('sun-ext')) {
+    return '"SimSun", "宋体", serif'
+  }
+  if (an.includes('simhei') || an.includes('heit') || an.includes('heiti') || an.includes('yahei')) {
+    return '"Microsoft YaHei", "微软雅黑", "SimHei", "黑体", sans-serif'
+  }
+  if (an.includes('kaiti') || an.includes('kai')) {
+    return '"KaiTi", "楷体", serif'
+  }
+  if (an.includes('fangsong') || an.includes('fang')) {
+    return '"FangSong", "仿宋", serif'
+  }
+  if (an.includes('msyh') || an.includes('microsoft yahei')) {
+    return '"Microsoft YaHei", "微软雅黑", sans-serif'
+  }
+
   if (an.includes('courier') || an.includes('consolas') || an.includes('mono') || ff === 'monospace') {
     return '"Courier New", Courier, monospace'
   }
@@ -319,7 +337,6 @@ export function cssFamilyFor(actualFontName, pdfFontFamily) {
   }
   return 'Helvetica, Arial, sans-serif'
 }
-
 /** PDF 字体名 + 粗斜体 → pdf-lib StandardFont 名（保存用） */
 export function toStandardFontName(actualFontName, pdfFontFamily, isBold, isItalic) {
   const an = (actualFontName || '').toLowerCase()
@@ -457,6 +474,40 @@ export function textToLines(text) {
   return String(text || '').split('\n')
 }
 
+
+// ─── 编辑框基线对齐（open-pdf-studio cssBaselineOffset 思路）───
+
+let _fontMetricsCtx = null
+function fontMetricsCtx() {
+  if (!_fontMetricsCtx) _fontMetricsCtx = document.createElement('canvas').getContext('2d')
+  return _fontMetricsCtx
+}
+
+/**
+ * 计算 CSS 行盒内文字的基线偏移量。
+ * Canvas 与 CSS 使用同一字体度量，把编辑框 top 对齐到基线可让
+ * 编辑框内文字与 PDF 原文精确叠合（避免基线错位）。
+ * @returns {number} 基线距行盒顶部的距离（px）
+ */
+export function cssBaselineOffset(fontFamily, fontSize, lineHeight, isBold = false, isItalic = false) {
+  try {
+    const ctx = fontMetricsCtx()
+    const fw = isBold ? '700 ' : ''
+    const fs = isItalic ? 'italic ' : ''
+    ctx.font = fs + fw + fontSize + 'px ' + fontFamily
+    const m = ctx.measureText('Mg')
+    const ascent = Number.isFinite(m.fontBoundingBoxAscent)
+      ? m.fontBoundingBoxAscent
+      : (m.actualBoundingBoxAscent || fontSize * 0.8)
+    const descent = Number.isFinite(m.fontBoundingBoxDescent)
+      ? m.fontBoundingBoxDescent
+      : (m.actualBoundingBoxDescent || fontSize * 0.2)
+    return ascent + (lineHeight - ascent - descent) / 2
+  } catch {
+    return fontSize * 0.8 + (lineHeight - fontSize) / 2
+  }
+}
+
 export default {
   collectParagraphs,
   offsetAtPoint,
@@ -468,4 +519,5 @@ export default {
   blockBoundsInLayer,
   textToLines,
   offsetToLineCol,
+  cssBaselineOffset,
 }

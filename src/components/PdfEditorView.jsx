@@ -47,6 +47,7 @@ import {
   offsetAtPoint,
   cssFamilyFor,
   blockBoundsInLayer,
+  cssBaselineOffset,
 } from '../lib/pdf/pdfTextEdit.js'
 
 // ─── 常量 ───────────────────────────────────────────────
@@ -226,7 +227,16 @@ export default function PdfEditorView({ entry, notify }) {
 
     const text = existing ? String(existing.text ?? '') : block.lineData.map((l) => l.text).join('\n')
     const pdfFontSize = existing ? existing.size : block.fontSize
-    const cssSize = Math.max(8, Math.round(pdfFontSize * scaleAt))
+    // 优先用 span 的实际渲染高度（含字体度量），保证编辑框文字与原文精确对齐
+    const firstLine = block.lineData[0]
+    const domSpanRect = firstLine?.spans?.[0]?.getBoundingClientRect?.()
+    const spanRenderH = domSpanRect?.height || 0
+    const cssSize = Math.max(
+      8,
+      spanRenderH > 0
+        ? spanRenderH
+        : Math.round(pdfFontSize * scaleAt),
+    )
     const cssFamily = existing
       ? existing.font || cssFamilyFor(block.actualFontName, block.fontFamily)
       : cssFamilyFor(block.actualFontName, block.fontFamily)
@@ -254,7 +264,10 @@ export default function PdfEditorView({ entry, notify }) {
     // 编辑框覆盖段落 bbox；宽度至少 60px
     const boxW = Math.max(bounds.width, 60)
     const lineCount = text.split('\n').length
-    const boxH = Math.max(bounds.height, lineCount * Math.max(12, lineSpacing))
+    // 高度 = 文字行高（精确对齐，不撑大留白）：每行 = span 渲染高度
+    const renderH = spanRenderH > 0 ? spanRenderH : Math.max(12, lineSpacing)
+    // 多行：首行 renderH，后续行按 lineSpacing 排布
+    const boxH = Math.max(bounds.height, (lineCount - 1) * Math.max(12, lineSpacing) + renderH)
 
     // 计算点击位置 → 段落文本字符偏移（光标定位）
     const layerRect = textLayer.getBoundingClientRect()
@@ -271,6 +284,15 @@ export default function PdfEditorView({ entry, notify }) {
       caretOffset = text.length
     }
 
+    // 基线偏移：编辑框 top 对齐到文字基线，避免与原文错位
+    const baselineOffset = cssBaselineOffset(
+      cssFamily,
+      Math.max(8, cssSize),
+      Math.max(12, lineSpacing),
+      fmt.bold,
+      fmt.italic,
+    )
+
     const state = {
       pageNum,
       layer: textLayer,
@@ -281,6 +303,7 @@ export default function PdfEditorView({ entry, notify }) {
       lineSpacing,
       caretOffset,
       scale: scaleAt,
+      baselineOffset,
     }
     editRef.current = state
     setEditing(state)
@@ -660,7 +683,7 @@ export default function PdfEditorView({ entry, notify }) {
           style={{
             fontFamily: fmt.font,
             fontSize: fmt.size + 'px',
-            lineHeight: Math.max(12, editing.lineSpacing) + 'px',
+            lineHeight: '1',
             color: fmt.color,
             fontWeight: fmt.bold ? '700' : '400',
             fontStyle: fmt.italic ? 'italic' : 'normal',
@@ -668,6 +691,7 @@ export default function PdfEditorView({ entry, notify }) {
             textAlign: fmt.align,
             whiteSpace: 'pre-wrap',
             background: '#ffffff',
+
           }}
         >
           {editing.text}
