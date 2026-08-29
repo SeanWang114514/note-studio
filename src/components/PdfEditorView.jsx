@@ -269,6 +269,39 @@ export default function PdfEditorView({ entry, notify }) {
     // 多行：首行 renderH，后续行按 lineSpacing 排布
     const boxH = Math.max(bounds.height, (lineCount - 1) * Math.max(12, lineSpacing) + renderH)
 
+    // ── scaleX 修正：让编辑框预加载文字与 PDF 原文宽度一致（无感切换）──
+    // 用 canvas measureText 计算编辑框文字自然宽度，与 PDF 原文块宽对比，
+    // 得出每行的水平缩放比，应用 transform: scaleX(ratio) 使文字精确重合。
+    let lineScaleXs = []
+    try {
+      const ctx = document.createElement('canvas').getContext('2d')
+      ctx.font =
+        (fmt.bold ? '700 ' : '') +
+        (fmt.italic ? 'italic ' : '') +
+        cssSize + 'px ' + cssFamily
+      const linesArr = text.split('\n')
+      lineScaleXs = block.lineData.map((ld, li) => {
+        const lineText = linesArr[li] ?? ''
+        if (!lineText) return 1
+        // PDF 行宽（span 位置差）
+        const lineSpans = ld.spans
+        if (lineSpans.length) {
+          const rects = lineSpans.map((s) => s.getBoundingClientRect())
+          const left = Math.min(...rects.map((r) => r.left))
+          const right = Math.max(...rects.map((r) => r.right))
+          const pdfLineW = Math.max(1, right - left)
+          // 自然文字宽（当前字体字号）
+          const naturalW = Math.max(1, ctx.measureText(lineText).width)
+          return pdfLineW / naturalW
+        }
+        return 1
+      })
+      // 限制极端值，避免严重变形
+      lineScaleXs = lineScaleXs.map((r) => Math.min(2.5, Math.max(0.4, r)))
+    } catch {
+      lineScaleXs = []
+    }
+
     // 计算点击位置 → 段落文本字符偏移（光标定位）
     const layerRect = textLayer.getBoundingClientRect()
     let caretOffset = text.length
@@ -304,6 +337,7 @@ export default function PdfEditorView({ entry, notify }) {
       caretOffset,
       scale: scaleAt,
       baselineOffset,
+      lineScaleXs,
     }
     editRef.current = state
     setEditing(state)
@@ -418,7 +452,17 @@ export default function PdfEditorView({ entry, notify }) {
     const state = editRef.current
     if (!state) return
     const box = editBoxRef.current
-    const newText = (box?.innerText || state.text || '').trim()
+    // 从多行 div 结构逐行读取（空行 div 无文本节点，innerText 会丢行）
+    let newText = state.text || ''
+    if (box) {
+      const lineEls = [...box.querySelectorAll('[data-line]')]
+      if (lineEls.length) {
+        newText = lineEls.map((l) => l.textContent || '').join('\n')
+      } else {
+        newText = box.innerText || state.text || ''
+      }
+    }
+    newText = newText.trim()
     const fmt = state.format
     const effBounds = state.bounds
     const effFmt = {
@@ -599,6 +643,7 @@ export default function PdfEditorView({ entry, notify }) {
   }, [mode, commitEdit])
 
   // ── 编辑框打开后：聚焦 + 光标定位到点击处 ──────────────
+  // 编辑框为多行 div 结构，把全局字符偏移映射到（行号, 行内偏移）
   useEffect(() => {
     if (!editing) return
     const raf = requestAnimationFrame(() => {
@@ -607,10 +652,24 @@ export default function PdfEditorView({ entry, notify }) {
       box.focus()
       const sel = window.getSelection()
       const range = document.createRange()
-      const textNode = box.firstChild || box
+      const linesEls = [...box.querySelectorAll('[data-line]')]
+      const targetOffset = Math.min(editing.caretOffset ?? 0, (editing.text || '').length)
+
+      // 全局偏移 → 行号/行内偏移
+      let lineIdx = 0
+      let lineOffset = targetOffset
+      const linesArr = String(editing.text || '').split('\n')
+      for (let i = 0; i < linesArr.length; i++) {
+        if (lineOffset > linesArr[i].length) {
+          lineOffset -= linesArr[i].length + 1
+          lineIdx++
+        } else break
+      }
+
       try {
-        const offset = Math.min(editing.caretOffset ?? 0, (textNode.textContent || '').length)
-        range.setStart(textNode, offset)
+        const lineEl = linesEls[lineIdx] || linesEls[linesEls.length - 1] || box
+        const textNode = lineEl.firstChild || lineEl
+        range.setStart(textNode, Math.min(lineOffset, (textNode.textContent || '').length))
         range.collapse(true)
       } catch {
         range.selectNodeContents(box)
@@ -664,6 +723,9 @@ export default function PdfEditorView({ entry, notify }) {
     if (!editing) return null
     const b = editing.bounds
     const fmt = editing.format
+    const linesArr = String(editing.text || '').split('\n')
+    // 每行应用 scaleX 修正（与 PDF 原文宽度一致，无感切换）
+    const scaleXs = editing.lineScaleXs || []
     return (
       <div
         className="pdf-inline-editor-pos"
@@ -691,10 +753,26 @@ export default function PdfEditorView({ entry, notify }) {
             textAlign: fmt.align,
             whiteSpace: 'pre-wrap',
             background: '#ffffff',
-
+            transformOrigin: '0 0',
           }}
         >
-          {editing.text}
+          {linesArr.map((ln, i) => {
+            const sx = scaleXs[i] && scaleXs[i] !== 1 ? scaleXs[i] : null
+            return (
+              <div
+                key={i}
+                data-line={i}
+                style={{
+                  transformOrigin: '0 0',
+                  transform: sx ? 'scaleX(' + sx + ')' : undefined,
+                  whiteSpace: 'pre',
+                  minHeight: fmt.size + 'px',
+                }}
+              >
+                {ln}
+              </div>
+            )
+          })}
         </div>
       </div>
     )

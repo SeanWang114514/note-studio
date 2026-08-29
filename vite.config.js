@@ -10,7 +10,14 @@ export default defineConfig({
     strictPort: true,
     watch: {
       // Windows 下编辑器临时文件（.tmpdir）会触发 EBUSY 崩溃，忽略之
-      ignored: ['.tmpdir/**', '**/.tmpdir/**', 'tmp/**', '**/node_modules/**'],
+      // 模式：<file>.<pid>.<uuid>.tmpdir/ 目录及其内容
+      ignored: [
+        '**/*.tmpdir/**',
+        '**/.*.tmpdir/**',
+        '**/.tmpdir/**',
+        'tmp/**',
+        '**/node_modules/**',
+      ],
     },
     proxy: {
       '/stirling': {
