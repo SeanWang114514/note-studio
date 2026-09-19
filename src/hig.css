@@ -433,10 +433,18 @@ input[type='radio'] {
   box-shadow: var(--shadow-md);
 }
 
-/* 拖动中：抬起来 + 抓手光标，让「正在搬这条工具栏」一目了然 */
+/* 拖动中：抬起来 + 抓手光标，让「正在搬这条工具栏」一目了然。
+   同时关掉毛玻璃：backdrop-filter（--blur = saturate(180%) blur(20px)）会让 Chromium
+   为这个表面建立 backdrop root，元素一边移动一边逐帧重新糊一遍背景 —— 这是拖动卡顿的
+   主要来源（第 11 节对滚动有过同类实测）。换成不透明底色，免得关掉模糊后变半透明看不清；
+   pointer-events: none 让工具栏从光标下经过时不再触发按钮 hover 重绘。 */
 .doc-toolbar.is-float.is-dragging {
   box-shadow: var(--shadow-lg);
   cursor: grabbing;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--bg-elevated);
+  pointer-events: none;
 }
 
 /* 拖动中已经够到某条边：工具栏会先按「吸附后的样子」显示（含自动转竖/横版），
@@ -570,6 +578,15 @@ input[type='radio'] {
 
 .tool-btn.danger:hover:not(:disabled) {
   background: rgba(255, 59, 48, 0.12);
+}
+
+/* 「删除新建页」上膛（二级确定的第一次点击）：整颗按钮翻成警示色，
+   一眼就能看出「再点一次就真删」，比弹窗更轻、也不会打断连续操作。 */
+.tool-btn.danger.is-armed,
+.tool-btn.danger.is-armed:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
 }
 
 .tool-btn:disabled {
@@ -1440,6 +1457,30 @@ input[type='radio'] {
   font-size: var(--text-footnote);
 }
 
+/* 失败原因 + 重试：让「打不开」不再是一条死胡同 */
+.file-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.file-error-retry {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.file-error-retry:hover {
+  background: rgba(255, 59, 48, 0.12);
+}
+
 /* ── 8. PDF 查看器 ────────────────────────────────────── */
 
 .pdf-viewer-shell {
@@ -2177,6 +2218,11 @@ body.panel-resizing * {
 
   .doc-toolbar .new-page-btn {
     padding: 0 8px;
+  }
+
+  /* 但「确认删除」这四个字必须露出来：二级确定的关键就是让用户看见自己在确认什么 */
+  .doc-toolbar .new-page-btn.is-armed .btn-text {
+    display: inline;
   }
 
   /* 单行排不下时允许换行，而不是把右侧按钮裁掉。

@@ -90,10 +90,12 @@ import {
 import SettingsModal from './components/SettingsModal.jsx'
 import { captureEditableSelection, captureTextareaSelection, insertAtRange } from './lib/caretInsert.js'
 import { extractPdfMarkdown } from './lib/pdf/pdfTextExtract.js'
+import DeletePageButton from './components/DeletePageButton.jsx'
 import OpenPdfStudioView from './components/OpenPdfStudioView.jsx'
 import PdfEditorView from './components/PdfEditorView.jsx'
 import { PanelSplitter } from './components/PanelSplitter.jsx'
 import { usePanel } from './lib/panelLayout.js'
+import useNewPageUndo from './lib/useNewPageUndo.js'
 import { makeSurfaceRescaleSettler, useSurfaceRescale } from './lib/surfaceRescale.js'
 import { isMobileShell, tagMobileShell } from './lib/mobile.js'
 import { createVelocityTracker, startMomentumScroll } from './lib/momentumScroll.js'
@@ -804,7 +806,11 @@ export default function App() {
           notify('找不到该文件，请重新打开', 'error')
           return
         }
-        if (!(await ensurePermission(handle))) {
+        // 打开只需要「读」权限，可这里以前只问 readwrite：用户在权限提示里只给了读、
+        // 或者把提示关掉，文件就完全打不开了 —— 明明读是够的（批注存在旁车文件里，
+        // 只有「保存回原文件」才需要写）。所以先要读写，拿不到就退到只读。
+        const canWrite = await ensurePermission(handle, 'readwrite')
+        if (!canWrite && !(await ensurePermission(handle, 'read'))) {
           notify('文件权限已失效，请重新打开文件', 'error')
           return
         }
@@ -814,6 +820,8 @@ export default function App() {
         await putFileHandle(entry)
         setRecent(addRecent(entry))
         addTab(entry)
+        // 只读打开时提前说一声：保存回原文件那步会失败（那里也会再提示一次）
+        if (!canWrite) notify('已以只读方式打开：没有写入权限，改完请另存', 'info')
       } catch (err) {
         notify(`打开文件失败：${err.message}`, 'error')
       }
@@ -3884,22 +3892,39 @@ function tbNearestEdge(x, y, w, h, b) {
   return dist <= TB_SNAP ? edge : null
 }
 
-/** 停靠位置的内联样式。用 translate 贴边/居中，不必先量出工具栏自身尺寸 */
+/** 自由悬浮 / 拖动中的内联样式：直接给左上角坐标，不用 translate */
+function tbFreeStyle(left, top) {
+  return { left, right: 'auto', top, transform: 'none' }
+}
+
+/** 停靠位置的内联样式。用 translate 贴边/居中，不必先量出工具栏自身尺寸。
+ *  left/right/top/transform 四个键永远齐全 —— 拖动时我们会直接改 DOM 绕过 React，
+ *  键集固定才不会留下上一次的残留值（比如 left 和 right 同时生效，元素被拉成一条）。 */
 function tbDockStyle(edge, b) {
+  const base = { left: 'auto', right: 'auto', top: 'auto', transform: 'none' }
   switch (edge) {
     case 'left':
-      return { left: b.left + TB_EDGE, top: (b.top + b.bottom) / 2, transform: 'translateY(-50%)' }
+      return { ...base, left: b.left + TB_EDGE, top: (b.top + b.bottom) / 2, transform: 'translateY(-50%)' }
     case 'right':
       return {
+        ...base,
         right: window.innerWidth - b.right + TB_EDGE,
         top: (b.top + b.bottom) / 2,
         transform: 'translateY(-50%)',
       }
     case 'bottom':
-      return { left: (b.left + b.right) / 2, top: b.bottom - TB_EDGE, transform: 'translate(-50%, -100%)' }
+      return { ...base, left: (b.left + b.right) / 2, top: b.bottom - TB_EDGE, transform: 'translate(-50%, -100%)' }
     default:
-      return { left: (b.left + b.right) / 2, top: b.top + TB_EDGE, transform: 'translateX(-50%)' }
+      return { ...base, left: (b.left + b.right) / 2, top: b.top + TB_EDGE, transform: 'translateX(-50%)' }
   }
+}
+
+/** 把这套样式写成内联样式（数字按 px）。拖动中直接调它改 DOM，不等 React 重渲染。 */
+function tbApplyStyle(el, s) {
+  el.style.left = typeof s.left === 'number' ? `${s.left}px` : s.left
+  el.style.right = typeof s.right === 'number' ? `${s.right}px` : s.right
+  el.style.top = typeof s.top === 'number' ? `${s.top}px` : s.top
+  el.style.transform = s.transform
 }
 
 function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
@@ -4012,6 +4037,12 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
   const onToolbarDragMove = (e) => {
     const d = dragMetaRef.current
     if (!d) return
+    // 指针已经松开了（松手落在窗口外、或系统把指针收走没给 pointerup）：直接收尾。
+    // 不判这一下的话，拖动会「粘」在指针上 —— 之后随便一晃鼠标工具栏就跟着跑。
+    if (e.buttons === 0) {
+      onToolbarDragEnd()
+      return
+    }
     if (!d.moved) {
       // 抖动阈值：不越过它就不算拖动，否则「点一下工具栏空白处」会把工具栏挪位
       if (Math.abs(e.clientX - d.sx) < TB_SLOP && Math.abs(e.clientY - d.sy) < TB_SLOP) return
@@ -4020,11 +4051,22 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
     // 夹在编辑区内，避免拖出可视范围后找不回来
     const left = Math.max(d.b.left + 2, Math.min(e.clientX - d.dx, d.b.right - d.w - 2))
     const top = Math.max(d.b.top + 2, Math.min(e.clientY - d.dy, d.b.bottom - d.h - 2))
-    setDragUI({ left, top, edge: tbNearestEdge(left, top, d.w, d.h, d.b) })
+    const edge = tbNearestEdge(left, top, d.w, d.h, d.b)
+    // 位置直接写 DOM：每次 pointermove 都 setState 会让整条工具栏（十几个按钮 + 四个弹层）
+    // 重渲染，拖起来一顿一顿、还跟不上手。只有「够到某条边」这种会改变外观
+    // （预览位置 + 自动横竖）的时刻才需要 React 重渲染。
+    const el = tbRef.current
+    if (el) tbApplyStyle(el, edge ? tbDockStyle(edge, d.b) : tbFreeStyle(left, top))
+    const prev = dragUIRef.current
+    const next = { left, top, edge }
+    dragUIRef.current = next
+    if (!prev || prev.edge !== edge) setDrag(next)
   }
   const onToolbarDragEnd = () => {
     window.removeEventListener('pointermove', onToolbarDragMove)
     window.removeEventListener('pointerup', onToolbarDragEnd)
+    // 触屏上系统可能直接打断手势（pointercancel）而不给 pointerup，一样要收尾
+    window.removeEventListener('pointercancel', onToolbarDragEnd)
     const meta = dragMetaRef.current
     const cur = dragUIRef.current
     dragMetaRef.current = null
@@ -4062,6 +4104,7 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
     setBounds(b)
     window.addEventListener('pointermove', onToolbarDragMove)
     window.addEventListener('pointerup', onToolbarDragEnd)
+    window.addEventListener('pointercancel', onToolbarDragEnd)
   }
   // 工具条空白处也能拖：只要按下的不是按钮/输入控件（那些是「用工具」，不是「搬工具」）
   const onBarPointerDown = (e) => {
@@ -4083,13 +4126,19 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
 
   // 拖动中若已经够到某条边，就实时按「吸附后的样子」渲染 —— 松手前先看到结果（含竖版切换）
   const snapEdge = drag?.edge || null
-  const tbEdge = snapEdge ?? dockEdge
+  // 拖动中还没够到边时，位置取自 dragUIRef（最新的指针位置）：拖动中位置是直接写 DOM 的，
+  // 不逐帧 setState，所以 state 里那份可能是几帧前的旧值 —— 万一别的原因触发重渲染，
+  // 用旧值就会让工具栏「跳回去一下」。这里读 ref 保证渲染出来的和 DOM 上的一致。
+  const dragNow = drag ? dragUIRef.current : null
+  const tbEdge = drag ? snapEdge || 'free' : dockEdge
   const isVert = snapEdge ? Boolean(TB_VERT_EDGES[snapEdge]) : vert
-  const tbStyle = snapEdge
-    ? tbDockStyle(snapEdge, bounds)
+  const tbStyle = drag
+    ? snapEdge
+      ? tbDockStyle(snapEdge, bounds)
+      : tbFreeStyle(dragNow?.left ?? drag.left, dragNow?.top ?? drag.top)
     : dockEdge
       ? tbDockStyle(dockEdge, bounds)
-      : { left: freePos.left, top: freePos.top }
+      : tbFreeStyle(freePos.left, freePos.top)
 
   // 滑杆上的「级数」→ 画布上真实笔迹宽度（CSS px）。公式与 drawAnnotation / eraser-cursor 保持一致，
   // 这样屏幕中央显示的粗细就是落笔后的实际粗细。
@@ -4630,6 +4679,8 @@ function DocxView({ entry, notify }) {
   editingRef.current = editing
   // 分页会把文档撑高 → 既有批注按「旧高/新高」重标定，墨迹停在原来那一页
   const markSurfaceHeight = useSurfaceRescale(surfaceRef, makeSurfaceRescaleSettler(tools))
+  // 「新建一页」的记账本：删除新建页 = 撤销新建（只撤自己刚插入的分页标记）
+  const { canUndo: canUndoNewPage, push: pushNewPage, pop: popNewPage } = useNewPageUndo(entry.id)
 
   // 打开：mammoth 渲染
   useEffect(() => {
@@ -4751,6 +4802,7 @@ function DocxView({ entry, notify }) {
     } else {
       setHtml((prev) => prev + PAGE_BREAK_HTML)
     }
+    pushNewPage({})
     setPageDirty(true)
     notify(
       editing
@@ -4758,6 +4810,32 @@ function DocxView({ entry, notify }) {
         : '已新增一页：点「保存内容到.docx」写入分页符（点「编辑内容」可继续改正文）',
       'success',
     )
+  }
+
+  /**
+   * 删除新建页：把文末那个分页标记去掉（addPage 的反向操作）。
+   * 同样分两条路：编辑态下 DOM 才是权威（保存也读 DOM），非编辑态改 html state。
+   */
+  const removeNewPage = () => {
+    const inDom = editing && docRef.current
+    const marks = inDom ? docRef.current.querySelectorAll('[data-nf-page-break]') : null
+    if (inDom && !marks.length) {
+      notify('文末没有可撤销的分页标记了', 'error')
+      popNewPage()
+      return
+    }
+    markSurfaceHeight()
+    if (inDom) {
+      marks[marks.length - 1].remove()
+    } else {
+      setHtml((prev) => {
+        const i = prev.lastIndexOf(PAGE_BREAK_HTML)
+        return i < 0 ? prev : prev.slice(0, i) + prev.slice(i + PAGE_BREAK_HTML.length)
+      })
+    }
+    popNewPage()
+    setPageDirty(true)
+    notify('已删除新建页（分页符已移除）：点「保存内容到.docx」生效', 'success')
   }
 
   const extraToolbar = (
@@ -4774,6 +4852,11 @@ function DocxView({ entry, notify }) {
         <NewPageButton
           onClick={addPage}
           title="在文末新增一页：写入 Word 分页符（下次保存内容到 .docx 时落盘）"
+        />
+        <DeletePageButton
+          onConfirm={removeNewPage}
+          disabled={!canUndoNewPage}
+          title="删掉刚刚新建的那一页（撤销新建：移除文末分页符）"
         />
         {(editing || pageDirty) && (
           <button className="tool-btn primary" onClick={saveContent} disabled={contentSaving}>
@@ -4846,6 +4929,13 @@ function MarkdownView({ entry, notify }) {
   slashIdRef.current = slashId
   // 分页会把预览面撑高 → 既有批注按「旧高/新高」重标定，墨迹停在原来的位置
   const markSurfaceHeight = useSurfaceRescale(previewSurfaceRef, makeSurfaceRescaleSettler(tools))
+  // 「新建一页」的记账本：删除新建页 = 撤销刚追加的分页块
+  const {
+    canUndo: canUndoNewPage,
+    last: lastNewPage,
+    push: pushNewPage,
+    pop: popNewPage,
+  } = useNewPageUndo(entry.id)
 
   useEffect(() => {
     let cancelled = false
@@ -5010,6 +5100,7 @@ function MarkdownView({ entry, notify }) {
     const breakBlock = { id: uid(), type: 'pagebreak', text: '' }
     const blankBlock = { id: uid(), type: 'p', text: '' }
     setBlocks([...blocksRef.current, breakBlock, blankBlock])
+    pushNewPage({ ids: [breakBlock.id, blankBlock.id] })
     setDirty(true)
     setTick((t) => t + 1)
     scheduleSave()
@@ -5021,7 +5112,31 @@ function MarkdownView({ entry, notify }) {
       }
     })
     notify('已新增一页（\\pagebreak 分页标记），已自动保存', 'success')
-  }, [markSurfaceHeight, notify, scheduleSave])
+  }, [markSurfaceHeight, notify, scheduleSave, pushNewPage])
+
+  /**
+   * 删除新建页：把刚才追加的「分页标记 + 空段落」两个块去掉（addPage 的反向操作）。
+   * 按 id 删而不是按位置删：用户可能已经在新页上打过字、或把别的块拖到了后面，
+   * 按 id 才能保证只撤掉这一页。
+   */
+  const removeNewPage = useCallback(() => {
+    const last = lastNewPage
+    if (!last?.ids) return
+    const ids = new Set(last.ids)
+    const exists = (blocksRef.current || []).some((b) => ids.has(b.id))
+    if (!exists) {
+      notify('文末没有可撤销的分页块了', 'error')
+      popNewPage()
+      return
+    }
+    markSurfaceHeight()
+    setBlocks((prev) => prev.filter((b) => !ids.has(b.id)))
+    popNewPage()
+    setDirty(true)
+    setTick((t) => t + 1)
+    scheduleSave()
+    notify('已删除新建页（\\pagebreak 分页块已移除），已自动保存', 'success')
+  }, [lastNewPage, markSurfaceHeight, notify, popNewPage, scheduleSave])
 
   const applySlash = useCallback(
     (id, item) => {
@@ -5072,6 +5187,11 @@ function MarkdownView({ entry, notify }) {
         <NewPageButton
           onClick={addPage}
           title="在文末新增一页：写入 \pagebreak 分页标记（Markdown 自动保存）"
+        />
+        <DeletePageButton
+          onConfirm={removeNewPage}
+          disabled={!canUndoNewPage}
+          title="删掉刚刚新建的那一页（撤销新建：移除 \pagebreak 分页块）"
         />
         <button
           className="tool-btn"
@@ -5267,6 +5387,13 @@ function EpubView({ entry, notify }) {
   const handleDocClick = useDocLinkGuard(docRef, notify)
   // 新章节会把书撑高 → 既有批注按「旧高/新高」重标定，墨迹停在原来那一章
   const markSurfaceHeight = useSurfaceRescale(surfaceRef, makeSurfaceRescaleSettler(tools))
+  // 「新建一页」的记账本：删除新建页 = 撤销刚追加的那个空白章节
+  const {
+    canUndo: canUndoNewPage,
+    last: lastNewPage,
+    push: pushNewPage,
+    pop: popNewPage,
+  } = useNewPageUndo(entry.id)
 
   useEffect(() => {
     let cancelled = false
@@ -5580,12 +5707,57 @@ function EpubView({ entry, notify }) {
         : prev,
     )
     const markup = `<hr class="nf-epub-split" data-nf-epub="${chapter.path}">${chapter.body}`
+    pushNewPage({ path: chapter.path, markup })
     // 编辑态下只动 DOM：html state 还是编辑前的内容，改它会触发按 state 重建 DOM，
     // 把用户正在改的正文冲掉（保存读的是 DOM，本来就够用）。
     if (editing && docRef.current) docRef.current.insertAdjacentHTML('beforeend', markup)
     else setHtml((prev) => prev + markup)
     setPageDirty(true)
     notify(`已新增一页「新页 ${index}」（新章节），点「保存到 EPUB」写入书末`, 'success')
+  }
+
+  /**
+   * 删除新建页：撤掉刚追加的那个空白章节（addPage 的反向操作）。
+   * 三处要一起回退：epubBook 里的文件条目（保存时不再写进 OPF）、正文里的分隔标记、
+   * 以及标记后面那一段（整章正文）。编辑态下 DOM 才是权威，非编辑态改 html state。
+   */
+  const removeNewPage = () => {
+    const last = lastNewPage
+    if (!last?.path) return
+    const stillThere = (epubBook?.files || []).some((f) => f.path === last.path)
+    if (!stillThere) {
+      notify('这一章已经不在书里了', 'error')
+      popNewPage()
+      return
+    }
+    markSurfaceHeight()
+    setEpubBook((prev) =>
+      prev
+        ? {
+            ...prev,
+            files: prev.files.filter((f) => f.path !== last.path),
+            count: Math.max(0, prev.files.length - 1),
+          }
+        : prev,
+    )
+    const inDom = editing && docRef.current
+    if (inDom) {
+      // 分隔标记 + 它后面插入的整章内容一起摘掉
+      const hr = docRef.current.querySelector(`hr.nf-epub-split[data-nf-epub="${last.path}"]`)
+      if (hr) {
+        const doomed = []
+        for (let n = hr; n; n = n.nextElementSibling) doomed.push(n)
+        doomed.forEach((n) => n.remove())
+      }
+    } else {
+      setHtml((prev) => {
+        const i = prev.lastIndexOf(last.markup)
+        return i < 0 ? prev : prev.slice(0, i) + prev.slice(i + last.markup.length)
+      })
+    }
+    popNewPage()
+    setPageDirty(true)
+    notify('已删除新建页（新章节已移出书末）：点「保存到 EPUB」生效', 'success')
   }
 
   const extraToolbar = (
@@ -5602,6 +5774,11 @@ function EpubView({ entry, notify }) {
         onClick={addPage}
         title="在书末新增一页：追加一个空白章节（写进 OPF 的阅读顺序）"
         disabled={!ready}
+      />
+      <DeletePageButton
+        onConfirm={removeNewPage}
+        disabled={!ready || !canUndoNewPage}
+        title="删掉刚刚新建的那一页（撤销新建：把新章节移出书末）"
       />
       {(editing || pageDirty) && (
         <button className="tool-btn primary" onClick={saveContent} disabled={contentSaving}>
@@ -5740,6 +5917,13 @@ function ExcelView({ entry, notify }) {
   const cellTextRef = useRef('')
   const redoOpsRef = useRef([]) // 重做栈：撤销时被移除的 op（{ idx, op }）
   const tools = useAnnotTools({ annKey: 'excel', entry, notify })
+  // 「新建一页」的记账本：删除新建页 = 撤销刚追加的那张工作表
+  const {
+    canUndo: canUndoNewPage,
+    last: lastNewPage,
+    push: pushNewPage,
+    pop: popNewPage,
+  } = useNewPageUndo(entry.id)
 
   // 记录一条编辑操作：应用到指定表的网格 + 追加 ops（服务端按顺序重放）
   const pushOpTo = useCallback((idx, op) => {
@@ -6131,7 +6315,33 @@ function ExcelView({ entry, notify }) {
   const addPage = () => {
     if (!editing) setEditing(true)
     const s = addSheet()
+    pushNewPage({ id: s.id, name: s.name })
     notify(`已新建工作表「${s.name}」：点「保存回Excel」写入文件`, 'success')
+  }
+
+  /**
+   * 删除新建页：把刚建的那张工作表去掉（addPage 的反向操作）。
+   * 新工作表是本地新增（origIndex = -1），没进 wbOps，所以不碰 ops 也不会影响保存。
+   */
+  const removeNewPage = () => {
+    const last = lastNewPage
+    if (!last?.id) return
+    const i = sheets.findIndex((s) => s.id === last.id)
+    if (i < 0) {
+      notify('这张工作表已经不在了', 'error')
+      popNewPage()
+      return
+    }
+    if (sheets.length <= 1) {
+      notify('至少保留一个工作表', 'error')
+      return
+    }
+    const next = sheets.filter((s) => s.id !== last.id)
+    setSheets(next)
+    // 删掉的正好是当前工作表时，把选中项收到还在的那一张上
+    setSheetIdx((idx) => Math.max(0, Math.min(idx > i ? idx - 1 : idx, next.length - 1)))
+    popNewPage()
+    notify(`已删除刚新建的工作表「${last.name}」：点「保存回Excel」生效`, 'success')
   }
 
   const renameSheet = () => {
@@ -6205,6 +6415,11 @@ function ExcelView({ entry, notify }) {
         <NewPageButton
           onClick={addPage}
           title="新建一页：Excel 里一页就是一张工作表（自动进入编辑模式）"
+        />
+        <DeletePageButton
+          onConfirm={removeNewPage}
+          disabled={!canUndoNewPage}
+          title="删掉刚刚新建的那张工作表（撤销新建）"
         />
         {(editing || wbOps.length > 0 || sheets.some((s) => s.ops.length > 0)) && (
           <button className="tool-btn primary" onClick={saveContent} disabled={saving}>
@@ -6481,6 +6696,13 @@ function TextView({ entry, notify }) {
   const textRef = useRef('')
   const saveTimer = useRef(null)
   const textareaRef = useRef(null)
+  // 「新建一页」的记账本：删除新建页 = 撤销刚插入的换页符 ^L
+  const {
+    canUndo: canUndoNewPage,
+    last: lastNewPage,
+    push: pushNewPage,
+    pop: popNewPage,
+  } = useNewPageUndo(entry.id)
 
   useEffect(() => {
     let cancelled = false
@@ -6556,6 +6778,7 @@ function TextView({ entry, notify }) {
     const next = before + insert + value.slice(at)
     textRef.current = next
     setText(next)
+    pushNewPage({ at, insert })
     setDirty(true)
     scheduleSave()
     requestAnimationFrame(() => {
@@ -6566,7 +6789,36 @@ function TextView({ entry, notify }) {
       node.setSelectionRange(caret, caret)
     })
     notify(`已新增一页（换页符 ^L）：共 ${next.split(TEXT_PAGE_BREAK).length} 页`, 'success')
-  }, [notify, scheduleSave])
+  }, [notify, scheduleSave, pushNewPage])
+
+  /**
+   * 删除新建页：把刚插进去的那个换页符去掉（addPage 的反向操作）。
+   * 优先按「插入位置 + 插入内容」精确摘除；用户在别处改动过导致对不上时，
+   * 退回「删掉最后一个换页符」——反正撤销的一定是自己刚建的那一页。
+   */
+  const removeNewPage = useCallback(() => {
+    const last = lastNewPage
+    if (!last) return
+    const value = textRef.current
+    let next = null
+    if (value.slice(last.at, last.at + last.insert.length) === last.insert) {
+      next = value.slice(0, last.at) + value.slice(last.at + last.insert.length)
+    } else {
+      const i = value.lastIndexOf(TEXT_PAGE_BREAK)
+      if (i >= 0) next = value.slice(0, i) + value.slice(i + 1)
+    }
+    if (next === null) {
+      notify('没找到刚插入的换页符', 'error')
+      popNewPage()
+      return
+    }
+    textRef.current = next
+    setText(next)
+    popNewPage()
+    setDirty(true)
+    scheduleSave()
+    notify(`已删除新建页（换页符 ^L 已移除）：共 ${next.split(TEXT_PAGE_BREAK).length} 页`, 'success')
+  }, [lastNewPage, notify, popNewPage, scheduleSave])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -6595,6 +6847,11 @@ function TextView({ entry, notify }) {
           onClick={addPage}
           title="在光标处插入换页符 ^L（新一页），纯文本自动保存"
           disabled={!ready}
+        />
+        <DeletePageButton
+          onConfirm={removeNewPage}
+          disabled={!ready || !canUndoNewPage}
+          title="删掉刚刚新建的那一页（撤销新建：移除刚插入的换页符 ^L）"
         />
         <button
           className="tool-btn"
@@ -6638,18 +6895,48 @@ function useWhiteboardPages(tools) {
   }
   // null = 还没动过，跟随存档；用户加过页后以本地值为准（写盘是同步发生的）
   const [localPages, setLocalPages] = useState(null)
+  // 本会话第一次加页之前的页数：删除新建页最多只能删回这里，删不到文件原有的页
+  const [basePages, setBasePages] = useState(null)
   const pages = localPages ?? storedPages()
   const surfaceRef = useRef(null)
   const markSurfaceHeight = useSurfaceRescale(surfaceRef, makeSurfaceRescaleSettler(tools))
+  // 换文件（annKey 变了）时把本地页数与撤销下界一起归零，避免把上一个文件的页数带过来
+  useEffect(() => {
+    setLocalPages(null)
+    setBasePages(null)
+  }, [tools.annKey])
+  const writePages = useCallback(
+    (n) => {
+      setLocalPages(n)
+      tools.setDocMeta({
+        whiteboardPages: { ...(tools.annRef.current?.whiteboardPages || {}), [tools.annKey]: n },
+      })
+    },
+    [tools],
+  )
   const addPage = useCallback(() => {
     markSurfaceHeight()
-    const next = storedPages() + 1
-    setLocalPages(next)
-    tools.setDocMeta({
-      whiteboardPages: { ...(tools.annRef.current?.whiteboardPages || {}), [tools.annKey]: next },
-    })
-  }, [markSurfaceHeight, tools])
-  return { pages, addPage, surfaceRef }
+    // 第一次加页时记下「原始页数」，作为撤销的下界
+    setBasePages((b) => (b == null ? storedPages() : b))
+    writePages(storedPages() + 1)
+  }, [markSurfaceHeight, writePages])
+  /**
+   * 删除新建页：把刚加的空白页去掉（addPage 的反向操作）。
+   * 有下界：只能删回本会话第一次加页前的页数，文件原本的页一张都不会少。
+   */
+  const removePage = useCallback(() => {
+    if (basePages == null || pages <= basePages) return false
+    markSurfaceHeight()
+    writePages(pages - 1)
+    return true
+  }, [basePages, pages, markSurfaceHeight, writePages])
+  return {
+    pages,
+    addPage,
+    removePage,
+    canRemovePage: basePages != null && pages > basePages,
+    surfaceRef,
+  }
 }
 
 /** 白板分页渲染：第 1 页是文件本身的占位说明，其后每页都是空白可批注页 */
@@ -6670,7 +6957,11 @@ function OfficeView({ entry, notify }) {
   const meta = TYPE_META[entry.type] || TYPE_META.unknown
   const Icon = meta.icon
   const tools = useAnnotTools({ annKey: entry.type, entry, notify })
-  const { pages, addPage, surfaceRef } = useWhiteboardPages(tools)
+  const { pages, addPage, removePage, canRemovePage, surfaceRef } = useWhiteboardPages(tools)
+  const removeNewPage = () => {
+    if (removePage()) notify('已删除刚新建的空白页', 'success')
+    else notify('没有可撤销的新建页了', 'error')
+  }
   const openNative = () => {
     try {
       const url = URL.createObjectURL(entry.file)
@@ -6688,6 +6979,11 @@ function OfficeView({ entry, notify }) {
             <NewPageButton
               onClick={addPage}
               title="在白板后面新增一页空白页（可继续手写批注）"
+            />
+            <DeletePageButton
+              onConfirm={removeNewPage}
+              disabled={!canRemovePage}
+              title="删掉刚刚新建的那张空白页（撤销新建；那页上的批注不随页删除）"
             />
             <button className="tool-btn" onClick={openNative}>
               <ExternalLink size={15} />
@@ -6735,7 +7031,11 @@ function OfficeView({ entry, notify }) {
 /** CAJ 占位 + 批注（专有格式无法解析） */
 function CajView({ entry, notify }) {
   const tools = useAnnotTools({ annKey: 'caj', entry, notify })
-  const { pages, addPage, surfaceRef } = useWhiteboardPages(tools)
+  const { pages, addPage, removePage, canRemovePage, surfaceRef } = useWhiteboardPages(tools)
+  const removeNewPage = () => {
+    if (removePage()) notify('已删除刚新建的空白页', 'success')
+    else notify('没有可撤销的新建页了', 'error')
+  }
   return (
     <div className="doc-view">
       <AnnotToolbar
@@ -6745,6 +7045,11 @@ function CajView({ entry, notify }) {
             <NewPageButton
               onClick={addPage}
               title="在白板后面新增一页空白页（可继续手写批注）"
+            />
+            <DeletePageButton
+              onConfirm={removeNewPage}
+              disabled={!canRemovePage}
+              title="删掉刚刚新建的那张空白页（撤销新建；那页上的批注不随页删除）"
             />
           </div>
         }

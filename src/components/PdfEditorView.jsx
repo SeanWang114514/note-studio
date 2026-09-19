@@ -33,14 +33,17 @@ import {
   appendBlankPdfPage,
   loadAnnotations,
   openPdf,
+  removeLastPdfPage,
   saveAnnotations,
   savePdfBack,
 } from '../lib/FileProcessor.js'
 import { PdfViewer, FIT_PAGE, FIT_WIDTH, ZOOM_MAX, ZOOM_MIN } from '../lib/pdf/pdfViewer.js'
 import { renderPageToCanvas } from '../lib/pdf/pdfRenderer.js'
+import DeletePageButton from './DeletePageButton.jsx'
+import useNewPageUndo from '../lib/useNewPageUndo.js'
 import { PanelSplitter } from './PanelSplitter.jsx'
 import { usePanel } from '../lib/panelLayout.js'
-import { getOriginalBytes, openPdfFromBytes } from '../lib/pdf/pdfEngine.js'
+import { getOriginalBytes, openPdfFromBytes, describePdfError } from '../lib/pdf/pdfEngine.js'
 import { useSurfaceRescale } from '../lib/surfaceRescale.js'
 
 /** 批注画布高度上限（CSS px）：超过浏览器 canvas 上限会导致画布分配失败 */
@@ -87,7 +90,9 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
   const [pdf, setPdf] = useState(null)
   const [numPages, setNumPages] = useState(0)
   const [ready, setReady] = useState(false)
-  const [failed, setFailed] = useState(false)
+  // 打开失败的原因（null = 没问题）。存具体原因而不是 true，
+  // 这样「加密」「损坏」「读取异常」能分别给话，不再一律说成文件损坏。
+  const [failed, setFailed] = useState(null)
   const [scale, setScale] = useState(1)
   const [fitMode, setFitMode] = useState(FIT_WIDTH)
   const [activePage, setActivePage] = useState(1)
@@ -97,12 +102,18 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
   // 新建一页后自增：让打开文档的 effect 从「缓存里的新字节」重开一次
   const [reloadKey, setReloadKey] = useState(0)
   const [inserting, setInserting] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  // 「新建一页」的记账本：删除新建页 = 撤销新建（只删自己刚追加的那一页）。
+  // 解构出来用，回调依赖才是稳定的（hook 每次渲染返回的对象是新的）。
+  const { canUndo: canUndoNewPage, push: pushNewPage, pop: popNewPage } = useNewPageUndo(entry.id)
 
   const scrollRef = useRef(null)
   const pagesBoxRef = useRef(null)
   const pagesRef = useRef(new Map()) // pageNum -> {cc, canvas, linkLayer}
   const viewerRef = useRef(null)
   const pdfDocRef = useRef(null) // 当前 pdf.js 文档：重载/卸载时负责销毁，避免换文档泄漏
+  // 上一次 destroy() 的 promise：开新文档前要 await 它，否则会撞上 pdf.js 的 worker 销毁竞态
+  const destroyRef = useRef(null)
   // 滚轮处理器是在挂载时一次性注册的（依赖 [ready, pdf]），读 ref 才能拿到最新模式
   const viewModeRef = useRef(viewMode)
   viewModeRef.current = viewMode
@@ -120,30 +131,51 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
   useEffect(() => {
     let cancelled = false
     setReady(false)
-    setFailed(false)
+    setFailed(null)
     pagesRef.current.clear()
     ;(async () => {
       try {
+        // 上一次 destroy() 必须先结完账：pdf.js 的 worker 销毁是异步的，紧接着再开
+        // 会撞上「PDFWorker.fromPort - the worker is being destroyed」（报错信息原文就
+        // 让人去 await destroy()）。不等它，新文档会开失败并退回原始文件重读，
+        // 把缓存里「新建一页」这类还没落盘的改动丢掉。
+        if (destroyRef.current) await destroyRef.current
         // 新建一页只改字节缓存（磁盘文件等「保存批注到 PDF」时才写），
         // 所以重载要从缓存字节开文档；首次打开仍从 entry.file 走。
         const cached = reloadKey > 0 ? getOriginalBytes(entry.id) : null
-        const doc = cached
-          ? (await openPdfFromBytes(cached, entry.id)).pdf
-          : await openPdf(entry.file, entry.id)
+        let doc
+        if (cached) {
+          try {
+            doc = (await openPdfFromBytes(cached, entry.id, { askPassword: true })).pdf
+          } catch (cacheErr) {
+            // 缓存字节坏了/过期的概率虽小，但一旦发生就再也打不开这个文件了。
+            // 退回原始文件重读一次，能自愈；重读也失败才真的报错。
+            // key 传 null：别拿文件字节覆盖缓存 —— 缓存里压着「新建一页」这类只存在
+            // 内存、还没落盘的改动，覆盖等于把它们静默丢掉（保存流程也只认缓存）。
+            try {
+              doc = await openPdf(entry.file, null, { askPassword: true })
+            } catch {
+              throw cacheErr
+            }
+          }
+        } else {
+          doc = await openPdf(entry.file, entry.id, { askPassword: true })
+        }
         if (cancelled) {
           doc.destroy?.()
           return
         }
-        pdfDocRef.current?.destroy?.()
+        if (pdfDocRef.current) destroyRef.current = Promise.resolve(pdfDocRef.current.destroy?.()).catch(() => {})
         pdfDocRef.current = doc
         setPdf(doc)
         setNumPages(doc.numPages)
         setReady(true)
       } catch (err) {
         if (!cancelled) {
-          setFailed(true)
+          const why = describePdfError(err)
+          setFailed(why)
           setReady(true)
-          notify('PDF 打开失败：' + err.message, 'error')
+          notify('PDF 打开失败：' + why, 'error')
         }
       }
     })()
@@ -151,8 +183,10 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
       cancelled = true
       viewerRef.current?.destroy()
       viewerRef.current = null
-      pdfDocRef.current?.destroy?.()
+      const prev = pdfDocRef.current
       pdfDocRef.current = null
+      // 记下销毁 promise，下一次开文档前 await（见上面那段注释）
+      if (prev) destroyRef.current = Promise.resolve(prev.destroy?.()).catch(() => {})
       setPdf(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -346,6 +380,7 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
       // 先记下加页前的表面高度（结算时按 旧高/新高 重标定批注）
       markSurfaceHeight()
       const { pageCount } = await appendBlankPdfPage(entry)
+      pushNewPage({ pageCount })
       setReloadKey((k) => k + 1)
       notify(
         `已在末尾新增第 ${pageCount} 页空白页，点击「保存批注到 PDF」写入文件`,
@@ -356,7 +391,25 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
     } finally {
       setInserting(false)
     }
-  }, [inserting, ready, markSurfaceHeight, entry, notify])
+  }, [inserting, ready, markSurfaceHeight, entry, notify, pushNewPage])
+
+  // ── 删除新建页：撤销刚追加的那一页（二级确定在按钮里） ──
+  const handleRemoveNewPage = useCallback(async () => {
+    if (removing || !ready || !canUndoNewPage) return
+    setRemoving(true)
+    try {
+      // 与加页同一个理由：先记下旧高度，结算时按 旧高/新高 把批注重标定回去
+      markSurfaceHeight()
+      const { pageCount } = await removeLastPdfPage(entry)
+      popNewPage()
+      setReloadKey((k) => k + 1)
+      notify(`已删除刚新建的页，现在共 ${pageCount} 页（保存批注到 PDF 时才写入文件）`, 'success')
+    } catch (err) {
+      notify('删除新建页失败：' + err.message, 'error')
+    } finally {
+      setRemoving(false)
+    }
+  }, [removing, ready, canUndoNewPage, popNewPage, markSurfaceHeight, entry, notify])
 
   // ── 缩略图 ────────────────────────────────────────────
   const regThumb = useCallback(
@@ -464,6 +517,12 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
             <FilePlus2 size={15} />
             <span className="btn-text">{inserting ? '新增中…' : '新建一页'}</span>
           </button>
+          <DeletePageButton
+            onConfirm={handleRemoveNewPage}
+            disabled={!canUndoNewPage || inserting}
+            busy={removing}
+            title="删掉刚刚新建的那一页（撤销新建；那页上的批注不随页删除）"
+          />
         </div>
         <div className="tool-group">
           <button
@@ -481,7 +540,16 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
         </div>
       </div>
 
-      {failed && <div className="file-error">PDF 打开失败，请检查文件是否损坏</div>}
+      {failed && (
+        <div className="file-error">
+          <span>PDF 打开失败：{failed}</span>
+          {/* 以前这里只说「请检查文件是否损坏」，是个死胡同：加密文件输错密码、
+              或缓存字节出问题时，用户没有任何重试入口，只能关掉标签页重来。 */}
+          <button className="file-error-retry" type="button" onClick={() => setReloadKey((k) => k + 1)}>
+            重试
+          </button>
+        </div>
+      )}
 
       <div className="pdf-body">
         {thumbs.collapsed ? (

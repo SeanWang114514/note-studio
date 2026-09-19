@@ -1039,6 +1039,32 @@ export async function appendBlankPdfPage(entry) {
 }
 
 /**
+ * 删除 PDF 末尾那一页 —— appendBlankPdfPage 的反向操作，供「删除新建页」（撤销新建）用。
+ *
+ * 只删最后一页：应用里唯一会新增页的入口就是把空白页追加到末尾，所以「撤销新建」
+ * 等价于「把末尾那页去掉」。中间删页会把后面所有页整体上移，既有手写墨迹就对不上原文了
+ * （与 appendBlankPdfPage 里同一个理由），这里刻意不做。
+ *
+ * 新字节同样写回 originalBytesCache，视图重开一次即可，保存流程不用改。
+ *
+ * @returns {Promise<{bytes: Uint8Array, pageCount: number}>}
+ */
+export async function removeLastPdfPage(entry) {
+  let bytes = getOriginalBytes(entry.id)
+  if (!bytes) {
+    const buf = await entry.file.arrayBuffer()
+    bytes = new Uint8Array(buf)
+  }
+  const pdf = await PDFDocument.load(bytes.slice())
+  const count = pdf.getPageCount()
+  if (count <= 1) throw new Error('只剩最后一页了，不能再删')
+  pdf.removePage(count - 1)
+  const next = new Uint8Array(await pdf.save())
+  setOriginalBytes(entry.id, next)
+  return { bytes: next, pageCount: pdf.getPageCount() }
+}
+
+/**
  * 把 PDF 批注真正写回 PDF 文件本身（open-pdf-studio saver.js 逻辑）。
  * 从 originalBytesCache 取原始字节作为唯一数据源 → pdf-lib 烧写批注 →
  * 文字编辑（textEdit）也原生烧进内容流（白底 + 新文字 PNG）→
@@ -1089,8 +1115,8 @@ export async function loadPdfAnnotations(entry, pdfDoc) {
   return loadPdfAnnotationsFromBytes(pdfDoc, bytes.slice(), pdfDoc.numPages)
 }
 
-export async function openPdf(file, key = null) {
-  const { pdf } = await engineOpenPdf(file, key)
+export async function openPdf(file, key = null, options = {}) {
+  const { pdf } = await engineOpenPdf(file, key, options)
   return pdf
 }
 
