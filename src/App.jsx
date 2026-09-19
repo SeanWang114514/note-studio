@@ -3023,7 +3023,8 @@ function useAnnotTools({ annKey, entry, notify }) {
   const handleOverlayUp = useCallback(
     (e) => {
     // 触摸收尾：滚动会话交给 finishTouchPan（松手带惯性，轻点=清空选择）
-    if (finishTouchPan(e)) return
+    // 系统打断（pointercancel：下拉通知栏、边缘返回手势）不算「松手」——收尾但不起惯性
+    if (finishTouchPan(e, { fling: e.type !== 'pointercancel' })) return
     if (endPointerSession(e)) return
     const d = drawingRef.current
     if (!d) return
