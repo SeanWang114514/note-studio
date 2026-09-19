@@ -1,0 +1,16 @@
+(function() {
+  var out = { total: 0, samples: [] };
+  var sels = document.querySelectorAll('[data-page]');
+  out.total = sels.length;
+  for (var i = 0; i < Math.min(sels.length, 20); i++) {
+    var s = sels[i];
+    out.samples.push({
+      i: i,
+      text: s.textContent,
+      lineIdx: s.dataset.lineIdx,
+      page: s.dataset.page,
+      w: s.getBoundingClientRect().width
+    });
+  }
+  return out;
+})()

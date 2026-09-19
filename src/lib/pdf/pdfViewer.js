@@ -62,6 +62,10 @@ export class PdfViewer {
     this.lowResTimer = null
     this.destroyed = false
     this._onScroll = null
+    // 布局代数 + 页码偏移缓存（见 rebuildPageOffsets）：滚动期间不再读布局
+    this.layoutStamp = 0
+    this.pageOffsets = null
+    this.pageOffsetsStamp = -1
   }
 
   /** 取滚动容器宽度（用于适合宽度计算） */
@@ -123,6 +127,8 @@ export class PdfViewer {
         (scrollEl.scrollTop + anchorY) * (this.scale / this._prevScale) - anchorY,
       )
     }
+    // 页面尺寸变了 → 页码偏移缓存作废
+    this.layoutStamp += 1
   }
 
   /**
@@ -152,7 +158,8 @@ export class PdfViewer {
   fitWidth() {
     const pdf = this.opts.getPdf()
     if (!pdf) return
-    const firstPage = this.visiblePageNums()[0] || 1
+    // 以「当前所在页」为基准：不同尺寸的页面混排时，跟随你正在看的那一页更合理
+    const firstPage = this.currentPage || 1
     const d = this.baseDims.get(firstPage)
     if (!d) return
     const newScale = Math.min(ZOOM_MAX, (this.getScrollWidth() / d.widthPt) * 0.98)
@@ -162,7 +169,7 @@ export class PdfViewer {
   fitPage() {
     const pdf = this.opts.getPdf()
     if (!pdf) return
-    const firstPage = this.visiblePageNums()[0] || 1
+    const firstPage = this.currentPage || 1
     const d = this.baseDims.get(firstPage)
     if (!d) return
     const s = Math.min(
@@ -171,6 +178,44 @@ export class PdfViewer {
     )
     this.fitMode = FIT_PAGE
     this._setFitScale(Math.min(ZOOM_MAX, s * 0.98))
+  }
+
+  /**
+   * 单页 / 连续模式。
+   *
+   * 单页：整页适配窗口（一屏正好一页）+ 滚动吸附到页首（CSS 在 .pdf-scroll--single 上），
+   *       只渲染当前页（可见页列表在 visiblePageNums 里收窄），翻页靠滚轮（PdfEditorView
+   *       的 wheel 处理）/ 底部上下页按钮 / 吸附滚动。
+   * 连续：恢复自由滚动。
+   *
+   * 之前这里只是一个「写了没人读」的字段（this.viewMode = …），按钮点下去除了自己的
+   * 文案和图标翻转之外什么都没发生 —— 用户看到的就是「单页模式和连续模式看不出来区别」。
+   */
+  setViewMode(mode) {
+    const next = mode === 'single' ? 'single' : 'continuous'
+    if (this.viewMode === next) return
+    this.viewMode = next
+    const scrollEl = this.opts.scrollEl
+    if (scrollEl) scrollEl.classList.toggle('pdf-scroll--single', next === 'single')
+    // 页间距/内边距都变了，偏移缓存与已渲染标记全部作废
+    this.invalidatePageOffsets()
+    this.rendered.clear()
+    this.setupLazyRender()
+    if (next === 'single') {
+      // 一屏一页：整页放进窗口，再把当前页的页首对齐到容器顶部。
+      // 页面尺寸可能还没就绪（启动时就记得是单页模式时，setViewMode 会先于首次渲染调用），
+      // 所以要等 ensureBaseDims 回来再算 fit —— 否则 fitPage() 直接 return，
+      // 单页模式会停留在上次的「适合宽度」缩放上，一页装不进窗口。
+      this.ensureBaseDims(this.currentPage)
+        .then(() => {
+          if (this.destroyed || this.viewMode !== 'single') return
+          this.fitPage()
+          this.jumpToPage(this.currentPage)
+        })
+        .catch(() => {})
+    } else {
+      this.renderVisible()
+    }
   }
 
   actualSize() {
@@ -244,21 +289,59 @@ export class PdfViewer {
     scrollEl.addEventListener('scroll', this._onScroll, { passive: true })
   }
 
-  syncActivePageFromScroll() {
+  /**
+   * 重建「页码 → 文档内偏移」缓存。
+   * 滚动时判断当前页如果按页去 getBoundingClientRect（45 页 = 45 次强制布局），
+   * 主线程会被读布局占满；布局只有在缩放/尺寸变化时才会变，所以在这里一次性量好，
+   * 滚动期间只用 scrollTop 做纯计算。
+   */
+  rebuildPageOffsets() {
     const scrollEl = this.opts.scrollEl
-    if (!scrollEl) return
-    const box = scrollEl.getBoundingClientRect()
-    const mid = box.top + box.height / 2
-    let best = null
-    let bestDist = Infinity
-    for (const p of this.opts.getPages() || []) {
+    const pages = this.opts.getPages() || []
+    if (!scrollEl || !pages.length) {
+      this.pageOffsets = []
+      return
+    }
+    const scrollRect = scrollEl.getBoundingClientRect()
+    const base = scrollRect.top - scrollEl.scrollTop
+    const offsets = []
+    for (const p of pages) {
       if (!p.cc) continue
       const r = p.cc.getBoundingClientRect()
       if (r.height === 0) continue
-      const d = Math.abs((r.top + r.bottom) / 2 - mid)
+      offsets.push({ pageNum: p.pageNum, top: r.top - base, height: r.height })
+    }
+    offsets.sort((a, b) => a.top - b.top)
+    this.pageOffsets = offsets
+    this.pageOffsetsStamp = this.layoutStamp
+  }
+
+  /** 布局变化时让偏移缓存失效（缩放、重排、容器尺寸变化都会走到这里） */
+  invalidatePageOffsets() {
+    this.pageOffsets = null
+  }
+
+  /**
+   * 根据滚动位置求当前页（无需读布局）：
+   * 取视口中线落在哪一页；落在页间空隙时取最近的一页。
+   */
+  syncActivePageFromScroll() {
+    const scrollEl = this.opts.scrollEl
+    if (!scrollEl) return
+    if (!this.pageOffsets || this.pageOffsetsStamp !== this.layoutStamp) this.rebuildPageOffsets()
+    const offsets = this.pageOffsets || []
+    const mid = scrollEl.scrollTop + scrollEl.clientHeight / 2
+    let best = null
+    let bestDist = Infinity
+    for (const o of offsets) {
+      if (mid >= o.top && mid <= o.top + o.height) {
+        best = o.pageNum
+        break
+      }
+      const d = mid < o.top ? o.top - mid : mid - (o.top + o.height)
       if (d < bestDist) {
         bestDist = d
-        best = p.pageNum
+        best = o.pageNum
       }
     }
     if (best && best !== this.currentPage) {
@@ -339,14 +422,31 @@ export class PdfViewer {
     const finish = () => this.rendering.delete(pageNum)
 
     this.rendering.add(pageNum)
+    // 在任何异步步骤之前先把旧的叠加层移出屏幕并清空内容。
+    // 否则缩放/容器重排期间，旧文字层会和新文字层同时可见，形成严重重影。
+    this.rendered.delete(pageNum)
+    if (p.textLayer) {
+      p.textLayer.style.opacity = '0'
+      p.textLayer.replaceChildren()
+    }
+    if (p.linkLayer) {
+      p.linkLayer.style.opacity = '0'
+      p.linkLayer.replaceChildren()
+    }
+    if (p.editCanvas) {
+      const editCtx = p.editCanvas.getContext('2d')
+      editCtx?.setTransform(1, 0, 0, 1, 0, 0)
+      editCtx?.clearRect(0, 0, p.editCanvas.width, p.editCanvas.height)
+    }
     try {
       // 低清预览立即展示（若缓存命中）
       const lowRes = this.lowResCache.get(pageNum)
       if (lowRes && !this.rendered.has(pageNum)) {
         const ctx = p.canvas.getContext('2d')
-        const dpr = getCanvasDPR()
+        const size = this.pageSize(pageNum)
+        const dpr = getCanvasDPR(size.width, size.height)
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-        ctx.drawImage(lowRes, 0, 0, this.pageSize(pageNum).width, this.pageSize(pageNum).height)
+        ctx.drawImage(lowRes, 0, 0, size.width, size.height)
       }
 
       const { task, viewport, page } = await startPageRender(pdf, pageNum, p.canvas, this.scale)
@@ -405,7 +505,9 @@ export class PdfViewer {
       }
       if (isStale()) { finish(); return }
 
-        if (p.textLayer) p.textLayer.style.opacity = '1'
+        // 文字层永远保持视觉透明：它只提供点击/选择命中区域。
+        // PDF 主画布负责原文显示，编辑覆盖层负责修改后的文字显示。
+        if (p.textLayer) p.textLayer.style.opacity = '0'
         if (p.linkLayer) p.linkLayer.style.opacity = '1'
 
       this.rendered.add(pageNum)
@@ -473,6 +575,8 @@ export class PdfViewer {
       if (this.destroyed) return
       clearTimeout(this._resizeTimer)
       this._resizeTimer = setTimeout(() => {
+        if (this.destroyed) return
+        this.layoutStamp += 1 // 容器尺寸变化 → 页码偏移缓存作废
         if (this.fitMode === FIT_WIDTH) this.fitWidth()
         else if (this.fitMode === FIT_PAGE) this.fitPage()
         else this.renderVisible()
@@ -490,13 +594,17 @@ export class PdfViewer {
     if (this.destroyed) return
     const scrollEl = this.opts.scrollEl
     const w = scrollEl?.clientWidth || 0
-    if (w > 0 && attempts > 0) {
-      this.fitWidth()
-      this.renderVisible()
-      return
+    // 单页模式下车一到就绪就是「整页适配窗口」，不能又被 fitWidth 覆盖回适合宽度
+    const initialFit = () => {
+      if (this.viewMode === 'single') {
+        this.fitMode = FIT_PAGE
+        this.fitPage()
+      } else {
+        this.fitWidth()
+      }
     }
-    if (attempts >= 10) {
-      this.fitWidth()
+    if ((w > 0 && attempts > 0) || attempts >= 10) {
+      initialFit()
       this.renderVisible()
       return
     }

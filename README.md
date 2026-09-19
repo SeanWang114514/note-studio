@@ -10,6 +10,29 @@
 - 语音识别（右上角「语音识别」按钮 → 小弹窗，麦克风 + 音量频率可视化，可选 Vosk 浏览器本地或 Qwen3-ASR 本地服务，识别文字插入到光标位置）
 - 本地 Python 转换服务（`server/`），包含离线 Stirling-PDF 兼容定稿接口（`http://127.0.0.1:5198`）
 - **Acrobat 级 PDF 文字编辑**（单击定位光标 / 跨行多选 / 段落连编辑，见下方「PDF 文字编辑」）
+- **批注文本框的 Word 式格式栏**（字体 / 字号 / 粗体 / 斜体 / 下划线 / 对齐 / 颜色，见下方「批注文本框样式」）
+
+## 批注文本框样式（Word 式格式栏）
+
+点上方工具栏的「文本框」按钮后，工具条会**自动多出一行文字格式栏**：
+
+- 字体（无衬线 / 宋体 / 楷体 / 等宽，下拉框里用自己的字体渲染）、字号（9–72 预设刻度）、
+  加粗 / 斜体 / 下划线、左中右对齐、5 个色块 + 自定义颜色；
+- **选中某个文本框时**，这里改的样式直接作用到那个框（同 Word 改选区）；
+  **没选中时**只改「新建文本框的默认样式」，栏首会写明当前是哪一种；
+- 栏是常驻的：点画布、点别处都不会把它关掉，所以不需要去猜隐藏手势。
+  （历史教训：这排控件最早藏在「再点一次工具按钮 / 双击 / 右键」后面，
+  用户完全找不到，反馈就是「没有 Word 那样能选字体字号的界面」。）
+
+> 关键实现点：
+> 1. 样式单一来源是 `src/lib/textStyle.js`（屏幕用 CSS 字体栈，导出 PDF 用 base-14 字体名）；
+> 2. 格式栏渲染在 `.doc-toolbar` 内部（不是浮层），靠给工具条加 `has-text-bar`
+>    把 `flex-wrap` 从 `nowrap` 改成 `wrap` 才拿到独立一行 ——
+>    **如果只是给栏加 `flex-basis:100%` 而不打开换行，它会横向溢出窗口、
+>    颜色色块跑到屏幕右边点不到**（两个验收脚本都为此加了护栏检查）；
+> 3. 导出的 PDF 用 `/FreeText` 的 `DA`（字体 + 字号 + 颜色）和 `/Q`（对齐）承载样式，
+>    下划线在 `DA` 里无法表达，只能靠阅读器；中文字符串必须写成 UTF-16BE 十六进制
+>    （`PDFString` 会按低 8 位截断，中文会变乱码）。
 
 ## PDF 文字编辑（Acrobat 级）
 
@@ -124,6 +147,26 @@ npm run dist:win
 
 生成文件位于 `release/Note-Studio-0.1.0-Windows.exe`。如果本机无法下载 Electron 构建运行时，可在 GitHub Actions 中手动运行 **Build Windows executable**，或推送 `v*` 标签后自动构建，并从 Actions Artifacts 下载 `.exe`。
 
+### 启动速度（改动打包配置前请先读这段）
+
+portable 是「自解压」形态：**每次双击 exe 都会把整包解压到临时目录再启动，退出后再删掉**，所以启动耗时几乎等于「解压耗时 + Electron 启动耗时」。当前配置专门为此做了优化，实测（本机 NVMe SSD）：
+
+| 形态 | 启动到窗口可见 |
+| --- | --- |
+| `release/Note-Studio-0.1.0-Windows.exe`（单人便携版） | **2.2 ~ 2.6 s** |
+| `release/win-unpacked/Note Studio.exe`（免解压目录版） | **1.2 ~ 1.5 s** |
+
+四个关键点，改动任意一条都会明显变慢：
+
+1. `compression: "store"` —— 不压缩载荷，省掉每次启动的 LZMA 解压（LZMA 约 3 MB/s，压缩后启动要 30 s+）。
+2. `portable.useZip: true` —— 走 NSIS 自带的 `File /r` 写文件，而不是 7z 插件解压（实测解压 1.87 s → 0.1~0.6 s）。该选项在 electron-builder 里标了 `@private`，但它只改变封装容器、不改变解压出来的内容。
+3. `electronLanguages: ["zh-CN","en-US"]` —— 只保留两种语言包。
+4. `files` 里的排除项 —— 渲染层依赖已由 Vite 打进 `dist/`，`node_modules` 不需要进包；另外排掉了 `dist/dart-pdf-editor.staging`（未被引用的旧构建）、`dist/open-pdf-studio`（未被引用的第三方副本）、`*.symbols`（Flutter 调试符号）等。**注意 `dist/dart-pdf-editor` 必须保留**，`OpenPdfStudioView.jsx` 用 iframe 加载它。
+
+> 打包前先关掉正在运行的程序，否则 `release/win-unpacked/Note Studio.exe` 被占用会导致打包失败。
+>
+> 全新构建出来的 exe 第一次运行时，Windows Defender 会先对新文件做一次扫描，可能耗时十几秒；从第二次起就是上表的 2.2~2.6 s。想彻底避免这次「首次扫描」，需要对 exe 做代码签名。
+
 ## 技术栈
 
 - 前端：React 18 + Vite 6
@@ -159,6 +202,17 @@ scripts/            vosk 模型 zip→tar.gz 转换脚本
 server/             Python 服务（qwen3_asr_server.py 本地识别 / convert_server.py 转换）
 public/models/      内置 Vosk 中文小模型（vosk-model-small-cn-0.22.tar.gz，约 42MB）
 ```
+
+## 未入库的运行时目录
+
+下面两个第三方 PDF 编辑器的构建产物合计约 115MB，已写进 `.gitignore`，仓库里没有：
+
+| 目录 | 用途 | 怎么补 |
+| --- | --- | --- |
+| `public/dart-pdf-editor/` | `components/OpenPdfStudioView.jsx` 用 iframe 加载 `/dart-pdf-editor/index.html` | 源码在 `dart-pdf-editor-web/`（Flutter 项目，已入库），`flutter build web` 后把产物拷到 `public/dart-pdf-editor/` |
+| `public/open-pdf-studio/` | 第三方 PDF 编辑器参考副本（研究/对比用） | 从上游项目获取，本地放着即可，缺失不影响主流程 |
+
+缺这两个目录不影响 `npm run build` 与主流程；只有「用 Dart PDF 编辑器打开」这个入口会加载失败。
 
 ## License
 

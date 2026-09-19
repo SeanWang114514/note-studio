@@ -12,12 +12,13 @@
 // 写回时保留页上「非本应用管理」的注释（链接/表单等），替换本应用管理的子类型
 // （handledSubtypes）——应用批注列表是唯一数据源（同 open-pdf-studio）。
 // 打开 PDF 时用 loadPdfAnnotationsFromBytes 把页上注释读回应用模型，实现跨会话可编辑。
+import { PDF_BASE14, normalizeTextStyle, pdfFontName, textStyleFromPdfFontName } from '../textStyle.js'
 //
 // 坐标：应用侧为归一化 0~1（相对旋转后视口），经 pdf.js viewport.convertToPdfPoint
 // 转到 PDF 用户空间（原点左下，含旋转/CropBox/Y 翻转处理）；读回用
 // convertToViewportPoint 逆变换。文字仍受 Helvetica(WinAnsi) 限制：中文被过滤。
 
-import { PDFDocument, PDFName, PDFString, PDFArray, PDFRef, rgb, degrees } from 'pdf-lib'
+import { PDFDocument, PDFName, PDFString, PDFHexString, PDFArray, PDFRef, rgb, degrees } from 'pdf-lib'
 
 /** 本应用接管（会替换）的注释子类型 */
 const HANDLED_SUBTYPES = new Set([
@@ -196,21 +197,25 @@ function buildAnnotationDict(pdf, viewport, a, refW) {
     }
     case 'text': {
       // 文本框 → FreeText（Contents + DA，原生渲染，同 open-pdf-studio）
+      // 字体/粗斜体 → 基础 14 字体的资源名（/Helv /HeBo /TiRo /Cour…）；
+      // 对齐 → /Q（0 左 1 中 2 右），阅读器会照着排。
       const [r, g, b] = colorArr
       const size = Math.max(6, (Number(a.fontSize) || 16) * 0.75)
       const p0 = normPointToPdf(viewport, { x: a.x, y: a.y })
       const p1 = normPointToPdf(viewport, { x: a.x + (a.w || 0.2), y: a.y + (a.h || 0.06) })
       const rect = pdfRect([p0, p1])
-      const da = `${r2(r)} ${r2(g)} ${r2(b)} rg /Helv ${size} Tf`
-      ensureFreeTextFont(pdf)
+      const style = normalizeTextStyle(a)
+      const fontName = pdfFontName(style.fontFamily, style.bold, style.italic)
+      const da = `${r2(r)} ${r2(g)} ${r2(b)} rg /${fontName} ${size} Tf`
+      ensureFreeTextFont(pdf, fontName)
       return context.obj({
         ...base,
         Subtype: 'FreeText',
         Rect: rect,
-        Contents: PDFString.of(String(a.text || '')),
+        Contents: pdfText(a.text),
         DA: PDFString.of(da),
         BS: buildBorderStyle(context, 0.5),
-        Q: 0,
+        Q: style.align === 'center' ? 1 : style.align === 'right' ? 2 : 0,
       })
     }
     case 'comment': {
@@ -219,7 +224,7 @@ function buildAnnotationDict(pdf, viewport, a, refW) {
         ...base,
         Subtype: 'Text',
         Rect: [p.x - 12, p.y - 12, p.x + 12, p.y + 12],
-        Contents: PDFString.of(String(a.text || '')),
+        Contents: pdfText(a.text),
         C: [1, 0.8, 0.1],
         Name: 'Comment',
         Open: false,
@@ -230,8 +235,13 @@ function buildAnnotationDict(pdf, viewport, a, refW) {
   }
 }
 
-/** 保证 AcroForm /DR 里有 /Helv，FreeText 的 DA 才能被查看器解析（同 open-pdf-studio ensureAcroFormFonts） */
-function ensureFreeTextFont(pdf) {
+/**
+ * 保证 AcroForm /DR /Font 里有这个字体资源名，FreeText 的 DA 才能被查看器解析
+ * （同 open-pdf-studio ensureAcroFormFonts）。基础 14 字体不用内嵌字体数据，
+ * 只登记一个 Type1 字典，所以多登记几种字体不会让文件变大。
+ */
+function ensureFreeTextFont(pdf, name = 'Helv') {
+  const baseFont = PDF_BASE14[name] || PDF_BASE14.Helv
   try {
     const context = pdf.context
     const catalog = context.lookup(context.trailerInfo.Root)
@@ -255,9 +265,9 @@ function ensureFreeTextFont(pdf) {
       fontDict = context.obj({})
       dr.set(PDFName.of('Font'), fontDict)
     }
-    if (!fontDict.get(PDFName.of('Helv'))) {
-      fontDict.set(PDFName.of('Helv'), context.obj({
-        Type: 'Font', Subtype: 'Type1', BaseFont: 'Helvetica', Encoding: 'WinAnsiEncoding',
+    if (!fontDict.get(PDFName.of(name))) {
+      fontDict.set(PDFName.of(name), context.obj({
+        Type: 'Font', Subtype: 'Type1', BaseFont: baseFont, Encoding: 'WinAnsiEncoding',
       }))
     }
   } catch (e) {
@@ -368,6 +378,19 @@ function lookupArray(dict, name) {
   } catch {
     return null
   }
+}
+
+/**
+ * 写 PDF 文本串：纯 ASCII 用普通字面串（省字节、任何阅读器都认）；
+ * 含非 ASCII（中文）必须写成 UTF-16BE 十六进制串 —— pdf-lib 的 PDFString.of() 会把每个字符
+ * 截成低 8 位（charCodeAt & 0xFF），'打'(U+6253) 会变成 'S'，中文就成了乱码。
+ * PDFHexString.fromText() 会按规范加 BOM 写成 FEFF…，任何阅读器都能正确解析；
+ * 读回时 strVal 走的 decodeText() 两种串都支持，所以能原样还原。
+ */
+function pdfText(value) {
+  const s = String(value ?? '')
+  // eslint-disable-next-line no-control-regex
+  return /^[\x20-\x7e]*$/.test(s) ? PDFString.of(s) : PDFHexString.fromText(s)
 }
 
 function strVal(dict, name) {
@@ -501,14 +524,21 @@ export async function loadPdfAnnotationsFromBytes(pdfJsDoc, bytes, pageCount) {
           const da = strVal(dict, 'DA')
           const sizeM = /([\d.]+)\s*Tf/.exec(da)
           const colM = /([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg/.exec(da)
+          const fontM = /\/([A-Za-z0-9]+)\s+[\d.]+\s*Tf/.exec(da)
           const fontSize = sizeM ? Math.round(Number(sizeM[1]) / 0.75) || 16 : 16
           const textColor = colM
             ? `#${[colM[1], colM[2], colM[3]].map((v) => Math.round(Number(v) * 255).toString(16).padStart(2, '0')).join('')}`
             : color
+          // 字体资源名 → 字体/粗斜体；/Q → 对齐。老文件是 /Helv 或没有这两个字段，回落默认即可。
+          const fontStyle = (fontM && textStyleFromPdfFontName(fontM[1])) || {}
+          const qRaw = dict.get(PDFName.of('Q'))
+          const q = qRaw && typeof qRaw.asNumber === 'function' ? qRaw.asNumber() : 0
           result.push({
             id: uid(), page: pageNum, type: 'text',
             x: nx, y: ny, w: nw, h: nh,
             text: contents, color: textColor, fontSize,
+            ...fontStyle,
+            align: q === 1 ? 'center' : q === 2 ? 'right' : 'left',
           })
           break
         }
@@ -595,15 +625,22 @@ export async function writeTextEditsToPdf(pdfJsDoc, sourceBytes, textEdits) {
       const vx = t.x * vw
       const vy = t.y * vh
       const wPx = Math.max(1, t.w * vw)
-      const hPx = Math.max(1, t.h * vh)
+      // textEdit 记录为逐行粒度（一行一条），高度天然只有单行；
+      // 保留页面高度 60% 的安全上限，仅兜底异常数据，不会影响正常行
+      const rawH = Number(t.h) * vh
+      const hPx = Math.max(1, Number.isFinite(rawH) ? Math.min(rawH, vh * 0.6) : 12)
       // 视口坐标 → PDF 用户空间（左下原点，convertToPdfPoint 已处理旋转/CropBox）
       const [px, py] = viewport.convertToPdfPoint(vx, vy)
+      // 关键：pdf-lib 的 y 参数是矩形/图片的「底边」（PDF 空间 y 向上），
+      // 而 py 对应的是该行的「顶边」（视口 y 向下）→ 底边 = py - hPx。
+      // 直接用 py 会把白底和新文字整体画到行的上面一行（导致原文残留 + 文字错位）。
+      const yBottom = py - hPx
 
       // 1) 白底覆盖原文（略放大 0.5pt 防锯齿露边）
       const pad = 0.5
       pdfPage.drawRectangle({
         x: px - pad,
-        y: py - pad,
+        y: yBottom - pad,
         width: wPx + pad * 2,
         height: hPx + pad * 2,
         color: rgb(1, 1, 1),
@@ -619,7 +656,7 @@ export async function writeTextEditsToPdf(pdfJsDoc, sourceBytes, textEdits) {
           const rotate = pageRotate === 0 ? degrees(0) : degrees(360 - pageRotate)
           pdfPage.drawImage(image, {
             x: px,
-            y: py,
+            y: yBottom,
             width: wPx,
             height: hPx,
             rotate,
@@ -635,40 +672,73 @@ export async function writeTextEditsToPdf(pdfJsDoc, sourceBytes, textEdits) {
 /** 用浏览器 canvas 把 textEdit 记录渲染成透明背景 PNG（白底由 PDF 矩形提供） */
 function renderTextEditPng(t, wPx, hPx) {
   if (typeof document === 'undefined') return Promise.resolve(null)
-  const dpr = Math.max(1, window.devicePixelRatio || 1)
+  // 固定 3 倍分辨率渲染 PNG（drawImage 会缩回目标尺寸），避免低分屏上文字发灰模糊
+  const dpr = Math.max(3, window.devicePixelRatio || 1)
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(2, Math.ceil(wPx * dpr))
   canvas.height = Math.max(2, Math.ceil(hPx * dpr))
   const ctx = canvas.getContext('2d')
   ctx.scale(dpr, dpr)
 
-  // 文字基线：textBaseline 'top'，与 App.jsx paintTextEdits 一致
+  // 文字基线：textBaseline 'top'
   const size = Math.max(4, Number(t.size) || 14)
   const font = String(t.font || 'Helvetica, Arial, sans-serif')
-  ctx.font = `${t.bold ? '700 ' : ''}${t.italic ? 'italic ' : ''}${size}px ${font}`
-  ctx.fillStyle = t.color || '#1f1f1f'
   ctx.textBaseline = 'top'
+  const baseFont = `${t.bold ? '700 ' : ''}${t.italic ? 'italic ' : ''}${size}px ${font}`
 
   const txt = String(t.text ?? '')
   const lines = String(txt).split('\n')
   const lineHeight = Math.max(4, Number(t.lineSpacing) > 0 ? Number(t.lineSpacing) : size * 1.35)
+  const spanFormats = t.spanFormats || []
+
   lines.forEach((ln, i) => {
     const ly = i * lineHeight
-    const m = ctx.measureText(ln)
-    let tx = 0
-    if (t.align === 'center') tx = Math.max(0, (wPx - m.width) / 2)
-    else if (t.align === 'right') tx = Math.max(0, wPx - m.width)
-    // 文字超宽时居中并保留白底覆盖
-    if (m.width > wPx) tx = (wPx - m.width) / 2
-    if (ln) ctx.fillText(ln, tx, ly, m.width > wPx ? wPx : undefined)
-    if (t.underline && ln) {
-      const uy = ly + size + 1.5
-      ctx.beginPath()
-      ctx.moveTo(tx, uy)
-      ctx.lineTo(tx + Math.min(m.width, wPx), uy)
-      ctx.strokeStyle = t.color || '#1f1f1f'
-      ctx.lineWidth = Math.max(1, size / 14)
-      ctx.stroke()
+    const fmtSpans = spanFormats[i] || []
+    if (fmtSpans.length > 0) {
+      // rich 模式：按 span 片段渲染
+      ctx.font = baseFont
+      const m = ctx.measureText(ln)
+      let startX = 0
+      if (t.align === 'center') startX = Math.max(0, (wPx - m.width) / 2)
+      else if (t.align === 'right') startX = Math.max(0, wPx - m.width)
+      let offsetX = startX
+      fmtSpans.forEach((sf) => {
+        const segText = sf.text || ''
+        if (!segText) return
+        const segFont = `${sf.bold ? '700 ' : ''}${sf.italic ? 'italic ' : ''}${size}px ${font}`
+        ctx.font = segFont
+        ctx.fillStyle = sf.color || t.color || '#1f1f1f'
+        // 不传 maxWidth：传了会把字形压扁（压缩 bug）
+        ctx.fillText(segText, offsetX, ly)
+        offsetX += ctx.measureText(segText).width
+      })
+      if (t.underline && ln) {
+        const uy = ly + size + 1.5
+        ctx.beginPath()
+        ctx.strokeStyle = t.color || '#1f1f1f'
+        ctx.lineWidth = Math.max(1, size / 14)
+        ctx.moveTo(startX, uy)
+        ctx.lineTo(offsetX, uy)
+        ctx.stroke()
+      }
+    } else {
+      // 统一格式（向后兼容无 spanFormats 的旧记录）
+      ctx.font = baseFont
+      ctx.fillStyle = t.color || '#1f1f1f'
+      const m = ctx.measureText(ln)
+      let tx = 0
+      if (t.align === 'center') tx = Math.max(0, (wPx - m.width) / 2)
+      else if (t.align === 'right') tx = Math.max(0, wPx - m.width)
+      if (ln) ctx.fillText(ln, tx, ly)
+      if (t.underline && ln) {
+        const uy = ly + size + 1.5
+        ctx.beginPath()
+        ctx.moveTo(tx, uy)
+        ctx.lineTo(tx + m.width, uy)
+        ctx.strokeStyle = t.color || '#1f1f1f'
+        ctx.lineWidth = Math.max(1, size / 14)
+        ctx.stroke()
+      }
     }
   })
 

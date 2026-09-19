@@ -6,14 +6,16 @@ import {
   Document,
   Packer,
   Paragraph,
+  PageBreak,
   TextRun,
   ImageRun,
   HeadingLevel,
   AlignmentType,
 } from 'docx'
+import { PDFDocument } from 'pdf-lib'
 import { openPdf as engineOpenPdf, getOriginalBytes, setOriginalBytes } from './pdf/pdfEngine.js'
 import { renderPageToCanvas, renderTextLayer } from './pdf/pdfRenderer.js'
-import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes } from './pdf/pdfSaver.js'
+import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes, writeTextEditsToPdf } from './pdf/pdfSaver.js'
 
 export const FILE_TYPES = {
   PDF: 'pdf',
@@ -45,7 +47,7 @@ const EXT_TO_TYPE = {
 
 const RECENT_KEY = 'noteflow.recent.v1'
 const DB_NAME = 'noteflow-store'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const HANDLE_STORE = 'handles'
 const ANNOT_DATA_STORE = 'ann-data'
 
@@ -59,8 +61,36 @@ export function detectType(name) {
 }
 
 export async function pickFiles() {
+  // Capacitor Android 使用 WebView，不一定实现 File System Access API。
+  // 使用系统 <input type=file> 作为原生 WebView 兼容入口，不再提示浏览器不支持。
   if (!('showOpenFilePicker' in window)) {
-    throw new Error('当前浏览器不支持文件选择，请使用最新版 Chrome 或 Edge')
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.accept = '.pdf,.doc,.docx,.md,.markdown,.txt,.ppt,.pptx,.xls,.xlsx,.epub,.caj'
+    input.style.position = 'fixed'
+    input.style.left = '-10000px'
+    document.body.appendChild(input)
+    try {
+      const files = await new Promise((resolve, reject) => {
+        input.addEventListener('change', () => resolve(Array.from(input.files || [])), { once: true })
+        input.addEventListener('cancel', () => resolve([]), { once: true })
+        input.click()
+      })
+      return files.map((file) => ({
+        id: `file-${file.name}-${file.size}-${file.lastModified}`,
+        name: file.name,
+        kind: 'file',
+        type: detectType(file.name),
+        size: file.size,
+        lastModified: file.lastModified,
+        handle: null,
+        file,
+        nativeReadonly: true,
+      }))
+    } finally {
+      input.remove()
+    }
   }
   const handles = await window.showOpenFilePicker({
     multiple: true,
@@ -102,13 +132,17 @@ export async function pickFiles() {
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    // 强制升级版本以确保所有 store 存在（解决 "object store not found" 错误：
+    // 旧 DB 在同一版本中可能缺少新增的 store，onupgradeneeded 不会触发）
+    const DB_VER_MAX = Math.max(DB_VERSION, 3)
+    const req = indexedDB.open(DB_NAME, DB_VER_MAX)
     req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(HANDLE_STORE)) {
-        req.result.createObjectStore(HANDLE_STORE, { keyPath: 'key' })
+      const db = req.result
+      if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+        db.createObjectStore(HANDLE_STORE, { keyPath: 'key' })
       }
-      if (!req.result.objectStoreNames.contains(ANNOT_DATA_STORE)) {
-        req.result.createObjectStore(ANNOT_DATA_STORE, { keyPath: 'key' })
+      if (!db.objectStoreNames.contains(ANNOT_DATA_STORE)) {
+        db.createObjectStore(ANNOT_DATA_STORE, { keyPath: 'key' })
       }
     }
     req.onsuccess = () => resolve(req.result)
@@ -166,9 +200,26 @@ export async function readText(file) {
   return file.text()
 }
 
+function downloadFallback(name, data, type = 'application/octet-stream') {
+  const blob = data instanceof Blob ? data : new Blob([data], { type })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = name || 'document'
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export async function saveTextFile(entry, content) {
+  if (!entry.handle) {
+    downloadFallback(entry.name, content, 'text/plain;charset=utf-8')
+    return
+  }
   if (!(await ensurePermission(entry.handle))) {
-    throw new Error('文件权限已失效，请重新打开文件后再保存')
+    throw new Error('文件写入权限已失效，请重新打开文件后再保存')
   }
   const writable = await entry.handle.createWritable()
   await writable.write(content)
@@ -176,7 +227,12 @@ export async function saveTextFile(entry, content) {
 }
 
 /** 通用：把字节写回原文件句柄（docx/epub 等编辑保存回用） */
+/** 通用：无 File System Access API 时通过系统下载保存副本。 */
 export async function saveFileBytes(entry, bytes) {
+  if (!entry.handle) {
+    downloadFallback(entry.name, bytes)
+    return
+  }
   if (!(await ensurePermission(entry.handle, 'readwrite'))) {
     throw new Error('文件写入权限已失效，请重新打开文件后再保存')
   }
@@ -218,6 +274,12 @@ export async function buildDocxFromHtml(html) {
     for (const el of root.children) {
       if (!el) continue
       const tag = el.tagName.toLowerCase()
+      // 「新建一页」插入的分页标记：写成 Word 原生分页符，
+      // 而不是把界面上那条虚线（含「新页」字样）当成正文文字存进 docx
+      if (el.classList && el.classList.contains('nf-page-break')) {
+        out.push(new Paragraph({ children: [new PageBreak()] }))
+        continue
+      }
       const runs = []
       const effectiveFormat = (textNode) => {
         let bold = false, italics = false, underline = false, color = null
@@ -374,12 +436,14 @@ export async function readEpubBook(file) {
   // 阅读顺序：container.xml → OPF → spine(itemref) → manifest(href)；取不到则按文件名排序
   let order = []
   let baseDir = ''
+  let opfPath = ''
   try {
     const container = zip.file('META-INF/container.xml')
     if (container) {
       const c = await container.async('string')
       const opfRel = (c.match(/full-path="([^"]+)"/) || [])[1]
       if (opfRel) {
+        opfPath = opfRel
         baseDir = opfRel.replace(/[^/]*$/, '')
         const opfFile = zip.file(opfRel)
         if (opfFile) {
@@ -499,7 +563,57 @@ export async function readEpubBook(file) {
           : '') + it.body,
     )
     .join('')
-  return { html, files: items, count: items.length, imageSrcs, getImageBlob }
+  return { html, files: items, count: items.length, imageSrcs, getImageBlob, baseDir, opfPath }
+}
+
+/**
+ * 造一个空白章节（xhtml）的骨架，供「新建一页」往书末追加一章。
+ * before/after 与 readEpubBook 里的每章一致（保留独立 head/命名空间），
+ * 保存时由 saveEpubBook 逐文件写回。
+ * @param {string} dir 章节所在目录（OPF 目录，例如 'OEBPS/'）
+ * @param {number} index 章节序号（用于文件名与标题，避免重名）
+ */
+export function makeEpubChapter(dir, index) {
+  const n = Math.max(1, Number(index) || 1)
+  return {
+    path: `${dir || ''}nf-page-${n}.xhtml`,
+    before:
+      '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n' +
+      '<html xmlns="http://www.w3.org/1999/xhtml"><head><meta charset="utf-8"/>' +
+      `<title>新页 ${n}</title></head><body>`,
+    after: '</body></html>',
+    body: `<h1 class="nf-new-page-title">新页 ${n}</h1><p><br/></p>`,
+  }
+}
+
+/**
+ * 把新增章节登记进 OPF：manifest 加 item、spine 加 itemref。
+ * 只写 manifest/spine 两处（不动 nav/NCX 目录），目录缺这一条不影响阅读顺序。
+ */
+async function registerEpubChapters(zip, opfPath, paths) {
+  const file = opfPath ? zip.file(opfPath) : null
+  if (!file) return
+  let opf = await file.async('string')
+  const opfDir = opfPath.replace(/[^/]*$/, '')
+  const items = []
+  const refs = []
+  paths.forEach((p) => {
+    const href = p.startsWith(opfDir) ? p.slice(opfDir.length) : p
+    let id = `nf-page-${href.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+    let n = 1
+    while (opf.includes(`id="${id}"`)) {
+      id = `nf-page-${href.replace(/[^a-zA-Z0-9_-]/g, '-')}-${n++}`
+    }
+    items.push(`<item id="${id}" href="${href}" media-type="application/xhtml+xml"/>`)
+    refs.push(`<itemref idref="${id}"/>`)
+  })
+  if (!items.length) return
+  // 属性顺序/换行各不相同，用「闭合标签前插入」而不是整体重写
+  opf = /<\/manifest>/i.test(opf)
+    ? opf.replace(/<\/manifest>/i, `${items.join('')}</manifest>`)
+    : opf
+  opf = /<\/spine>/i.test(opf) ? opf.replace(/<\/spine>/i, `${refs.join('')}</spine>`) : opf
+  zip.file(opfPath, opf)
 }
 
 /** 按章间 hr 标记把编辑后的 DOM 拆回各章内容（顺序与 files 对应） */
@@ -519,14 +633,19 @@ function splitEpubBody(root) {
 }
 
 /** 把编辑后的整书逐章写回 epub（zip 重打包，基于文件最新字节）。
- *  图片还原由调用方负责（保存前已把显示用 URL 换回原始相对路径）。 */
-export async function saveEpubBook(entry, files, rootEl) {
+ *  图片还原由调用方负责（保存前已把显示用 URL 换回原始相对路径）。
+ *  「新建一页」追加的新章节不在原 zip 里：写文件时顺带创建，并登记进 OPF。
+ *  @param {object} [opts] - { opfPath } 用于把新章节挂到 manifest/spine */
+export async function saveEpubBook(entry, files, rootEl, opts = {}) {
   const parts = splitEpubBody(rootEl)
   const zip = await JSZip.loadAsync(await readEntryBytes(entry))
+  const added = []
   files.forEach((it, i) => {
     const body = parts[i] ?? ''
+    if (!zip.file(it.path)) added.push(it.path)
     zip.file(it.path, it.before + body + it.after)
   })
+  if (added.length) await registerEpubChapters(zip, opts.opfPath, added)
   const blob = await generateEpubZip(zip)
   await saveFileBytes(entry, new Uint8Array(await blob.arrayBuffer()))
 }
@@ -740,6 +859,10 @@ export function emptyAnnotations(fileName = '') {
     epub: [],
     ppt: [],
     caj: [],
+    // 白板分页数（PPT/CAJ/未知格式）：按 annKey 记「这块白板有几页」。
+    // 批注坐标是相对整块白板归一化的，页数决定白板高度 —— 必须和批注一起持久化，
+    // 否则重开文件时白板变矮，落在第 2 页之后的墨迹会整体上移错位。
+    whiteboardPages: {},
   }
 }
 
@@ -886,23 +1009,59 @@ export async function getAnnotationsData(id) {
 }
 
 /**
+ * 在 PDF 末尾追加一页空白页（pdf-lib 直接改文档结构）。
+ *
+ * 为什么追加在末尾而不是插在当前页之后：批注坐标是「相对整篇文档表面」归一化的，
+ * 中间插页会把后面所有页的内容整体下移，既有的手写墨迹就再也对不上原文；
+ * 追加在末尾只需按「旧高/新高」把批注纵向重标定一次（见 surfaceRescale.js），
+ * 既有页面与墨迹的相对位置完全不变。
+ *
+ * 新页尺寸沿用最后一页，避免横竖版混排时跳档。新字节写进 originalBytesCache，
+ * 于是「保存批注到 PDF」会连同新页一起落盘（与视图既有的保存流程一致）。
+ *
+ * @returns {Promise<{bytes: Uint8Array, pageCount: number, width: number, height: number}>}
+ */
+export async function appendBlankPdfPage(entry) {
+  let bytes = getOriginalBytes(entry.id)
+  if (!bytes) {
+    const buf = await entry.file.arrayBuffer()
+    bytes = new Uint8Array(buf)
+  }
+  // .slice() 副本：pdf-lib 解析可能改动传入字节，而缓存里的字节还要留给保存流程
+  const pdf = await PDFDocument.load(bytes.slice())
+  const count = pdf.getPageCount()
+  if (!count) throw new Error('PDF 没有可参照的页面')
+  const { width, height } = pdf.getPage(count - 1).getSize()
+  pdf.addPage([width, height])
+  const next = new Uint8Array(await pdf.save())
+  setOriginalBytes(entry.id, next)
+  return { bytes: next, pageCount: pdf.getPageCount(), width, height }
+}
+
+/**
  * 把 PDF 批注真正写回 PDF 文件本身（open-pdf-studio saver.js 逻辑）。
  * 从 originalBytesCache 取原始字节作为唯一数据源 → pdf-lib 烧写批注 →
+ * 文字编辑（textEdit）也原生烧进内容流（白底 + 新文字 PNG）→
  * 写回原文件句柄 → 更新缓存为新字节。
  *
  * @param {object} entry - 文件条目（含 id / name / handle / file）
  * @param {object} pdfDoc - pdf.js 文档（坐标换算用）
  * @param {Array<object>} annotations - 待写回的批注（非 textEdit）
+ * @param {Array<object>} [textEdits] - 待原生写回的文字编辑（type:'textEdit'）
  * @returns {Promise<Uint8Array>} 写回后的新字节
  */
-export async function savePdfBack(entry, pdfDoc, annotations) {
+export async function savePdfBack(entry, pdfDoc, annotations, textEdits = []) {
   let bytes = getOriginalBytes(entry.id)
   if (!bytes) {
     const buf = await entry.file.arrayBuffer()
     bytes = new Uint8Array(buf)
   }
   // .slice() 副本：避免 pdf-lib 解析时意外改动缓存字节
-  const newBytes = await writeAnnotationsToPdf(pdfDoc, bytes.slice(), annotations)
+  let newBytes = await writeAnnotationsToPdf(pdfDoc, bytes.slice(), annotations)
+  // 文字编辑原生写回（白底覆盖原文 + 新文字 PNG 嵌入内容流）
+  if (textEdits && textEdits.length) {
+    newBytes = await writeTextEditsToPdf(pdfDoc, newBytes, textEdits)
+  }
 
   if (!(await ensurePermission(entry.handle, 'readwrite'))) {
     throw new Error('文件写入权限已失效，请重新打开文件后再保存')
@@ -953,10 +1112,66 @@ export async function renderPdfTextLayer(page, container, viewport, cssScale) {
   return { layer: result.layer, divs: result.divs, texts: result.texts }
 }
 
+/** 「新页」标记的 HTML：DOCX 视图用它表示分页符，保存时由 buildDocxFromHtml 变成真正的分页符 */
+export const DOCX_PAGE_BREAK_HTML =
+  '<div class="nf-page-break" data-nf-page-break="1" contenteditable="false"><span>新页</span></div>'
+
+/** document.xml 里替换分页符用的哨兵文本（私有区字符，正文几乎不可能自带） */
+const DOCX_PAGE_BREAK_SENTINEL = '\uE000NF-PAGE-BREAK\uE000'
+
+/**
+ * Word 的分页符（<w:br w:type="page"/>）mammoth 读的时候会直接丢掉 ——
+ * 于是「新建一页」保存后重新打开，虚线的「新页」标记就不见了（文件里其实有真的分页符）。
+ * 做法：把 zip 里的 word/document.xml 取出来，把分页符元素原地换成一段哨兵文本
+ * （仍在同一个 <w:r> 里，XML 依旧合法），mammoth 会把它当普通文字渲染，收尾时再换回标记。
+ * 只有 document.xml 里确实有分页符时才重建 zip —— 其它文档走原路径，没有任何额外开销。
+ */
+async function docxWithPageBreakMarkers(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer)
+  if (!isZipBytes(bytes)) return arrayBuffer
+  let xml = ''
+  let zip = null
+  try {
+    zip = await JSZip.loadAsync(bytes)
+    const f = zip.file('word/document.xml')
+    if (!f) return arrayBuffer
+    xml = await f.async('string')
+  } catch {
+    return arrayBuffer
+  }
+  const BREAK_RE = /<w:br\b[^>]*w:type="page"[^>]*\/>|<w:br\b[^>]*w:type="page"[^>]*>\s*<\/w:br>/g
+  if (!BREAK_RE.test(xml)) return arrayBuffer
+  BREAK_RE.lastIndex = 0
+  const patched = xml.replace(BREAK_RE, `<w:t xml:space="preserve">${DOCX_PAGE_BREAK_SENTINEL}</w:t>`)
+  try {
+    zip.file('word/document.xml', patched)
+    return await zip.generateAsync({ type: 'arraybuffer' })
+  } catch {
+    return arrayBuffer
+  }
+}
+
+/** 把 mammoth 渲染出来的哨兵文字还原成「新页」标记块 */
+function restorePageBreakMarkers(html) {
+  if (!html.includes(DOCX_PAGE_BREAK_SENTINEL)) return html
+  const sent = DOCX_PAGE_BREAK_SENTINEL
+  const PARA_RE = new RegExp(`<p[^>]*>(?:(?!</p>)[\\s\\S])*?${sent}(?:(?!</p>)[\\s\\S])*?</p>`, 'g')
+  let out = html.replace(PARA_RE, (para) => {
+    // 这一段的可见文字里只有哨兵 → 整段换成标记块；还夹着别的文字/图片 → 标记块放到段落前面，段落保留
+    const visible = para.replace(/<[^>]*>/g, '').split(sent).join('').replace(/&nbsp;/g, ' ').trim()
+    if (!visible) return DOCX_PAGE_BREAK_HTML
+    return DOCX_PAGE_BREAK_HTML + para.split(sent).join('')
+  })
+  // 兜底：哨兵若落在 <p> 之外（例如表格单元格里），宁可丢掉标记，也不要让哨兵文字露出来
+  if (out.includes(sent)) out = out.split(sent).join('')
+  return out
+}
+
 export async function renderDocxHtml(file) {
-  const arrayBuffer = await file.arrayBuffer()
+  const raw = await file.arrayBuffer()
+  const arrayBuffer = await docxWithPageBreakMarkers(raw)
   const result = await mammoth.convertToHtml({ arrayBuffer })
-  return result.value || '<p>（无法解析该文档）</p>'
+  return restorePageBreakMarkers(result.value || '<p>（无法解析该文档）</p>')
 }
 
 export function renderMarkdownHtml(text) {

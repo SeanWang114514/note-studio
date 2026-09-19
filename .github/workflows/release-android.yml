@@ -28,9 +28,17 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: bash gradlew assembleDebug
+      - name: Upload debug APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: note-studio-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      # 只在推 v* tag 时发布；tag_name 不写死 —— 以前写死成 v0.1.1，
+      # 结果每次发版都把这个 debug APK 传到旧 Release 上
       - name: Upload APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.1
           files: android/app/build/outputs/apk/debug/app-debug.apk
           generate_release_notes: true

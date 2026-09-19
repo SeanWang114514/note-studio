@@ -1,18 +1,139 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Apple Human Interface Guidelines — 设计令牌
+   颜色取 Apple 系统色（systemBlue/Red/Green/Orange…），
+   层级取 systemBackground / secondarySystemBackground / separator 体系，
+   材质取 NSVisualEffectView 的 vibrancy 观感（半透明 + 背景模糊）。
+   明暗两套主题跟随系统（prefers-color-scheme），无需应用内切换。
+   ═══════════════════════════════════════════════════════════════════ */
 :root {
+  color-scheme: light dark;
+
+  /* Apple 系统色（Light 外观取值） */
+  --sys-blue: #007aff;
+  --sys-green: #34c759;
+  --sys-red: #ff3b30;
+  --sys-orange: #ff9500;
+  --sys-yellow: #ffcc00;
+  --sys-purple: #af52de;
+  --sys-pink: #ff2d55;
+  --sys-teal: #5ac8fa;
+  --sys-indigo: #5856d6;
+  --sys-gray: #8e8e93;
+
+  /* 语义背景（systemBackground 体系） */
   --bg: #ffffff;
-  --bg-subtle: #fafafa;
-  --bg-hover: #f2f2f0;
-  --bg-active: #ecece9;
-  --border: #ececeb;
-  --text: #37352f;
-  --text-secondary: #787774;
-  --text-muted: #9b9a97;
-  --accent: #2383e2;
-  --danger: #e5484d;
-  --success: #2f9e44;
-  --shadow: 0 1px 3px rgba(15, 15, 15, 0.06);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
-    "PingFang SC", sans-serif;
+  --bg-subtle: #f2f2f7;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(120, 120, 128, 0.12);
+  --bg-active: rgba(120, 120, 128, 0.2);
+
+  /* 填充色（fill 体系，用于控件底色与分组容器） */
+  --fill-quaternary: rgba(120, 120, 128, 0.08);
+  --fill-tertiary: rgba(118, 118, 128, 0.12);
+  --fill-secondary: rgba(120, 120, 128, 0.16);
+
+  /* 分隔线（separator 体系） */
+  --border: rgba(60, 60, 67, 0.18);
+  --border-strong: rgba(60, 60, 67, 0.29);
+
+  /* 标签文字（label 体系） */
+  --text: #000000;
+  --text-secondary: rgba(60, 60, 67, 0.6);
+  --text-muted: rgba(60, 60, 67, 0.38);
+
+  /* 强调色与状态色 */
+  --accent: #007aff;
+  --accent-soft: rgba(0, 122, 255, 0.12);
+  --danger: #ff3b30;
+  --success: #34c759;
+  --warning: #ff9500;
+
+  /* 材质（vibrancy）
+     窗口级 chrome（侧边栏/标签栏/工具栏）保留毛玻璃；文档内面板（缩略图栏/批注栏等）
+     只用这个半透明填充（略高于原来的 0.72，补偿失去的模糊），避免每个面板都建立 backdrop root。 */
+  --material-sidebar: rgba(246, 246, 248, 0.78);
+  --material-toolbar: rgba(252, 252, 253, 0.8);
+  --material-popover: rgba(250, 250, 252, 0.86);
+  --material-hud: rgba(28, 28, 30, 0.82);
+  --blur: saturate(180%) blur(20px);
+
+  /* 阴影：HIG 风格以极细描边 + 低对比投影表达层级 */
+  --shadow-sm: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 0.5px 1.5px rgba(0, 0, 0, 0.07);
+  --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.2);
+
+  /* 连续圆角（Continuous corner）比例梯度 */
+  --radius-xs: 5px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* 字号层级（macOS 控件 13px 基准 + iOS 文本样式梯度） */
+  --text-caption2: 11px;
+  --text-caption1: 12px;
+  --text-footnote: 13px;
+  --text-subhead: 15px;
+  --text-body: 17px;
+  --text-title3: 20px;
+  --text-title2: 22px;
+  --text-title1: 28px;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Dark 外观：systemBackground / label / separator 的暗色取值 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sys-blue: #0a84ff;
+    --sys-green: #30d158;
+    --sys-red: #ff453a;
+    --sys-orange: #ff9f0a;
+    --sys-purple: #bf5af2;
+    --sys-pink: #ff375f;
+    --sys-teal: #64d2ff;
+    --sys-indigo: #5e5ce6;
+    --sys-gray: #98989d;
+
+    --bg: #1c1c1e;
+    --bg-subtle: #000000;
+    --bg-elevated: #2c2c2e;
+    --bg-hover: rgba(120, 120, 128, 0.24);
+    --bg-active: rgba(120, 120, 128, 0.36);
+
+    --fill-quaternary: rgba(120, 120, 128, 0.12);
+    --fill-tertiary: rgba(118, 118, 128, 0.24);
+    --fill-secondary: rgba(120, 120, 128, 0.32);
+
+    --border: rgba(84, 84, 88, 0.5);
+    --border-strong: rgba(84, 84, 88, 0.65);
+
+    --text: #ffffff;
+    --text-secondary: rgba(235, 235, 245, 0.6);
+    --text-muted: rgba(235, 235, 245, 0.3);
+
+    --accent: #0a84ff;
+    --accent-soft: rgba(10, 132, 255, 0.22);
+    --danger: #ff453a;
+    --success: #30d158;
+    --warning: #ff9f0a;
+
+    --material-sidebar: rgba(32, 32, 34, 0.8);
+    --material-toolbar: rgba(30, 30, 32, 0.82);
+    --material-popover: rgba(44, 44, 46, 0.9);
+    --material-hud: rgba(58, 58, 60, 0.86);
+
+    --shadow-sm: 0 0 0 0.5px rgba(255, 255, 255, 0.06), 0 0.5px 1.5px rgba(0, 0, 0, 0.5);
+    --shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06), 0 1px 3px rgba(0, 0, 0, 0.55);
+    --shadow-md: 0 2px 12px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.7);
+  }
 }
 
 * {
@@ -377,19 +498,24 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 46px;
   padding: 7px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   flex-shrink: 0;
-  flex-wrap: wrap;
+  /* 工具栏单行排布：不允许换行（换行会让文档区跳动）；窄屏由 hig.css 的媒体查询收起次要元素。
+     文字格式栏（字体/字号/颜色…）已经改成浮层（.text-format-float，见下方），不再占这一行的第二行，
+     所以工具栏高度恒定：进入文本框上下文不会再推挤文档。 */
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .tool-group {
   display: flex;
   align-items: center;
   gap: 2px;
+  flex: 0 0 auto;
 }
 
 .tool-group + .tool-group {
@@ -446,6 +572,12 @@ button:disabled {
   margin-left: auto;
   font-size: 12px;
   color: var(--text-muted);
+  /* 工具栏里唯一可压缩的元素：超长时省略而不是把工具栏挤成两行 */
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dirty-dot {
@@ -1203,7 +1335,9 @@ button:disabled {
 
 .ann-comment {
   position: absolute;
-  transform: translate(-50%, -100%);
+  /* 锚点（批注位置）在气泡的底部中央；两处偏移都要乘 --ann-scale，
+     缩放倍数变化时气泡原地变大/缩小，尖角始终指向批注点（translate 与 scale 一致放大） */
+  transform: translate(calc(var(--ann-scale, 1) * -50%), calc(var(--ann-scale, 1) * -100%)) scale(var(--ann-scale, 1));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1252,14 +1386,19 @@ button:disabled {
   position: fixed;
   inset: 0;
   z-index: 40;
+  /* 只负责视觉压暗，不吃指针事件：否则双击的第二次按下会落到遮罩上，
+     浏览器就不会再向工具按钮派发 dblclick，表现为「双击没反应」。
+     关闭面板由 .doc-toolbar 的文档级捕获监听负责（见 App.jsx AnnotToolbar）。 */
+  pointer-events: none;
 }
 
 .pen-popover {
-  position: absolute;
-  top: calc(100% + 8px);
+  /* portal 到 body 渲染，坐标（left/top）由 Popover 组件按按钮视口位置内联给出。
+     不能用 absolute：.doc-toolbar 有 backdrop-filter，会成为包含块与层叠上下文。 */
+  position: fixed;
   z-index: 50;
   width: 260px;
-  max-width: calc(100% - 28px);
+  max-width: calc(100vw - 28px);
   padding: 14px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1313,6 +1452,142 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+/* ── 文字格式栏的控件（Word 式：字体 / 字号 / 粗斜下划线 / 对齐 / 颜色） ──
+   栏体本身是浮动卡片，见下方 .text-format-float / .text-format-bar。 */
+.text-size-select {
+  width: 68px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.text-style-group,
+.text-align-group {
+  gap: 4px;
+}
+
+.text-style-group .seg-btn,
+.text-align-group .seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0;
+}
+
+/* ── 文字格式栏（Word 式：字体 / 字号 / 粗斜下划线 / 对齐 / 颜色） ──
+   浮层：portal 到 body，锚在「正在编辑/选中的文本框」下沿之外（下方放不下就翻到上方），
+   不占工具条行高、不参与文档排版 —— 出现/消失都不会把文档推下去，也不遮挡文本框。
+   定位（left/top/prefers-above）由 FloatingTextFormatBar 逐帧测量后写入内联样式。 */
+.text-format-float {
+  position: fixed;
+  z-index: 60; /* 高于工具条弹层（50）与遮罩（40），低于 toast */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 16px);
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+/* 指向文本框的小箭头：贴在浮层朝文本框的那条边上 */
+.text-format-float > .tfb-arrow {
+  position: absolute;
+  left: var(--tfb-arrow-left, 50%);
+  width: 10px;
+  height: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.text-format-float.below > .tfb-arrow {
+  top: -6px;
+  border-right: none;
+  border-bottom: none;
+}
+
+.text-format-float.above > .tfb-arrow {
+  bottom: -6px;
+  border-left: none;
+  border-top: none;
+}
+
+/* 浮层里的格式栏本体：只是内容的一行，不再带工具条那一行的边框/占位 */
+.text-format-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.text-format-bar .tfb-context {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.text-format-bar .tfb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+.text-format-bar .tfb-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.text-format-bar .tfb-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.text-format-bar .text-font-select {
+  width: 104px;
+  min-height: 30px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.text-format-bar .text-size-select {
+  width: 62px;
+  min-height: 30px;
+}
+
+.text-format-bar .text-style-group,
+.text-format-bar .text-align-group {
+  flex: 0 0 auto;
+}
+
+.text-format-bar .text-style-group .seg-btn,
+.text-format-bar .text-align-group .seg-btn {
+  min-height: 30px;
+  width: 30px;
+  flex: 0 0 auto;
+}
+
+.text-format-bar .color-row {
+  flex-wrap: nowrap;
+}
+
 .eraser-mode-group {
   gap: 6px;
 }
@@ -1361,31 +1636,8 @@ button:disabled {
   width: 286px;
 }
 
-.eraser-size-preview {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 42px;
-  margin-top: 10px;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-}
-
-.eraser-size-preview > span {
-  display: block;
-  min-width: 4px;
-  min-height: 4px;
-  border: 1.5px solid var(--accent);
-  border-radius: 50%;
-  background: rgba(35, 131, 226, 0.12);
-}
-
-.eraser-size-preview small {
-  font-size: 11px;
-}
+/* 擦除范围预览已移到屏幕中央的 .size-preview-hud（拖滑杆时出现），
+   原来的弹层内小预览 .eraser-size-preview 不再使用。 */
 
 .color-row {
   display: flex;
@@ -1668,6 +1920,68 @@ button:disabled {
   color: var(--text-muted);
   font-size: 12px;
   text-align: center;
+}
+
+/* 批注栏分类：按批注种类分组，组头可点击折叠（折叠状态只影响显示，不影响选中/多选） */
+.ann-panel-group {
+  margin-bottom: 10px;
+}
+
+.ann-panel-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ann-panel-group-head:hover {
+  background: var(--bg-hover);
+}
+
+.ann-panel-group-caret {
+  flex-shrink: 0;
+  transition: transform 120ms ease;
+}
+
+.ann-panel-group-head.collapsed .ann-panel-group-caret {
+  transform: rotate(-90deg);
+}
+
+.ann-panel-group-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ann-panel-group-count {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 组内条目略微缩进，视觉上归属于该分类 */
+.ann-panel-group .ann-panel-item {
+  margin-left: 8px;
+}
+
+.ann-panel-group .ann-panel-item:last-child {
+  margin-bottom: 2px;
 }
 
 .ann-panel-item {
@@ -2200,6 +2514,132 @@ button:disabled {
 
 .excel-body table tr:nth-child(even) td {
   background: rgba(128, 128, 128, 0.05);
+}
+
+/* ─── 新建一页：各格式的分页标记 ───────────────────── */
+
+/* 「新建一页」按钮：PDF 工具条 / 各视图工具条共用，样式与 tool-btn 一致 */
+.tool-btn.new-page-btn {
+  white-space: nowrap;
+}
+
+/* Word 分页标记：界面上是一条分页线（保存 docx 时写成 Word 原生分页符）。
+   高度刻意做得很矮：加页只让文档表面长一点点，既有批注几乎不位移。 */
+.nf-page-break {
+  position: relative;
+  margin: 14px 0;
+  border-top: 1px dashed var(--accent, #2383e2);
+  user-select: none;
+  cursor: default;
+}
+
+.nf-page-break span {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent, #2383e2);
+  background: var(--bg, #fff);
+  border: 1px solid var(--accent, #2383e2);
+  border-radius: 999px;
+}
+
+/* Markdown 分页线（预览里的 \pagebreak） */
+.md-page-break {
+  position: relative;
+  margin: 18px 0;
+  border-top: 1px dashed var(--accent, #2383e2);
+  font-size: 0;
+}
+
+.md-page-break::after {
+  content: '新页';
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent, #2383e2);
+  background: var(--bg, #fff);
+  border: 1px solid var(--accent, #2383e2);
+  border-radius: 999px;
+}
+
+/* Markdown 编辑器里的分页块（整块即一条分页线，不可输入文字） */
+.block-page-break {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 6px;
+  border-top: 1px dashed var(--accent, #2383e2);
+  min-height: 18px;
+  user-select: none;
+}
+
+.block-page-break > span {
+  margin-left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent, #2383e2);
+  background: var(--bg, #fff);
+  border: 1px solid var(--accent, #2383e2);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.block-page-break-del {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border, #d9d9d9);
+  border-radius: 50%;
+  background: var(--bg, #fff);
+  color: var(--text-muted, #777);
+  cursor: pointer;
+}
+
+.block-page-break-del:hover {
+  color: #ff3b30;
+  border-color: #ff3b30;
+}
+
+/* 白板分页（PPT / CAJ / 未知格式）：第 1 页是文件占位说明，其后是空白可批注页 */
+.office-doc.paged {
+  display: block;
+  min-height: 0;
+}
+
+.office-page {
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.office-doc.paged .office-page {
+  min-height: 420px;
+}
+
+.office-doc.paged .office-page + .office-page {
+  margin-top: 18px;
+  border-top: 1px dashed var(--border, #d9d9d9);
+}
+
+.office-page-label {
+  color: var(--text-muted, #777);
+  font-size: 12px;
+  user-select: none;
 }
 
 /* 占位白板（ppt/caj）：可批注区域 */
@@ -3314,7 +3754,6 @@ button:disabled {
   letter-spacing: 0.03em;
 }
 
-.model-kind-vosk { background: #dbeafe; color: #1d4ed8; }
 .model-kind-gguf { background: #fce7f3; color: #be185d; }
 .model-kind-mlx  { background: #e0e7ff; color: #4338ca; }
 
@@ -3638,8 +4077,19 @@ button:disabled {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 作为 .pdf-annot-host 的 flex 子项，必须允许收缩到内容最小宽度以下，
+     否则 PDF 纸张会把整个 shell 撑出右侧批注栏，覆盖住批注栏分隔条（拖不动 + 点击被画布吞掉） */
+  min-width: 0;
+  width: 100%;
   min-height: 0;
   background: #f4f5f7;
+}
+
+/* PDF 视图在 doc-body-row 中的位置（与批注面板并排） */
+.pdf-annot-host {
+  flex: 1;
+  min-width: 0;
+  display: flex;
 }
 
 .pdf-viewer-shell .pdf-toolbar {
@@ -3651,7 +4101,14 @@ button:disabled {
   padding: 4px 10px;
   border-bottom: 1px solid var(--border);
   background: #ffffff;
-  flex-wrap: wrap;
+  /* 与 .doc-toolbar 一致：单行不换行，窄屏由媒体查询收起文字标签 */
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.pdf-viewer-shell .pdf-toolbar .tool-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .pdf-viewer-shell .pdf-zoom-pct {
@@ -3663,11 +4120,17 @@ button:disabled {
   cursor: pointer;
 }
 
-.pdf-viewer-shell .pdf-toolbar .toolbar-hint {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
+@media (max-width: 1080px) {
+  .pdf-viewer-shell .pdf-toolbar {
+    flex-wrap: wrap;
+    padding: 4px 6px;
+  }
+  .pdf-viewer-shell .pdf-toolbar .pdf-zoom-pct {
+    display: none;
+  }
+  .pdf-viewer-shell .pdf-toolbar .tool-btn {
+    padding: 4px 6px;
+  }
 }
 
 .pdf-viewer-shell .pdf-body {
@@ -3735,6 +4198,9 @@ button:disabled {
   line-height: 1;
   transform-origin: 0 0;
   display: block;
+  /* 文字层仅用于点击命中/选择，禁止作为第二个可见文字渲染源。
+     opacity: 0 比 color:transparent 更彻底，避免 Chromium 字体合成残影。 */
+  opacity: 0 !important;
   pointer-events: auto;
   user-select: text;
   -webkit-user-select: text;
@@ -3746,6 +4212,12 @@ button:disabled {
   cursor: text;
   user-select: text;
   -webkit-user-select: text;
+  /* 文字层只负责命中/选择，绝不能再绘制一份可见文字。
+     PDF 主画布已经包含原文；编辑后的文字由 editCanvas/编辑表面负责。
+     强制透明可压住 PDF.js/浏览器样式，避免“原文 + 文字层 + 编辑文字”重影。 */
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
 }
 
 /* 编辑模式：整段高亮提示（hover 显示淡蓝框，表示点击即可编辑） */
@@ -3760,8 +4232,9 @@ button:disabled {
   background: rgba(35, 131, 226, 0.32);
 }
 
-/* 编辑中的文字层：隐藏底层 span，编辑框盖在上面 */
-.pdf-viewer-shell .pdf-text-layer.editing-layer span[data-page] {
+/* 编辑中的段落底层 span：透明隐藏（编辑行自带白底覆盖在上面）；
+   非本段落 span 不受影响，可继续点击进入其他段落 */
+.pdf-viewer-shell .pdf-text-layer span[data-page].editing {
   color: transparent;
 }
 
@@ -3771,6 +4244,21 @@ button:disabled {
   left: 0;
   z-index: 5;
   pointer-events: none;
+}
+
+/* PDF 批注表面：批注画布必须盖住链接层（z5），否则画笔会被链接元素截走。
+   画布只在绘制工具激活时接收指针事件（inline pointer-events），
+   浏览状态下让事件穿透，链接与滚动照常工作。 */
+.pdf-viewer-shell .pdf-pages .annot-canvas {
+  z-index: 6;
+}
+
+.pdf-viewer-shell .pdf-pages .ann-dom {
+  z-index: 7;
+}
+
+.pdf-viewer-shell .pdf-pages .eraser-cursor-preview {
+  z-index: 8;
 }
 
 /* 浮动页码/缩放控制条（open-pdf-studio 风格深色胶囊） */
@@ -3829,33 +4317,76 @@ button:disabled {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* 内联文字编辑覆盖层（Acrobat 风格：白底覆盖原文，无边框） */
+/* 编辑激活：整个文字层透明（原渲染完全隐藏，只显示编辑表面）；
+   同时杀掉 hover/选区蓝色高亮（原 span 不再参与交互） */
+.pdf-viewer-shell .pdf-text-layer.textedit-active {
+  opacity: 0 !important;
+  color: transparent;
+}
+.pdf-viewer-shell .pdf-text-layer.textedit-active span[data-page] {
+  color: transparent !important;
+  background: transparent !important;
+  outline: none !important;
+}
+.pdf-viewer-shell.edit-mode .pdf-text-layer.textedit-active span[data-page]:hover {
+  background: transparent;
+  outline: none;
+}
+
+/* 内联文字编辑覆盖层（整页原生流式表面：自带白底盖住原渲染） */
 .pdf-inline-editor-pos {
   position: absolute;
   z-index: 20;
   cursor: text;
-  box-shadow: 0 0 0 1px rgba(35, 131, 226, 0.35);
-  border-radius: 1px;
 }
 
 .pdf-inline-editor {
-  position: absolute;
-  inset: 0;
+  position: relative;
   min-width: 40px;
   padding: 0;
   border: none;
   background: #ffffff;
   outline: none;
-  white-space: pre-wrap;
   overflow: visible;
   cursor: text;
   caret-color: #1f1f1f;
   user-select: text;
   -webkit-user-select: text;
   word-break: break-word;
-  overflow-wrap: break-word;
 }
 
+/* 每一行：绝对锚定到原始坐标（left/top 相对表面盒子原点），
+   宽高锁死 = 原文行实测几何（white-space:pre 不换行，不推挤错位）；
+   正文/边注/多列交错布局每行独立站位，逐像素重合；
+   字号/字距复制文字层 span computed 值，同样文字同样宽度；
+   lineHeight = 行高，基线与原文 span 行盒重合；
+   表面白底已由 .pdf-inline-editor 提供（原渲染完全隐藏） */
+.pdf-inline-editor .pdf-edit-line {
+  position: absolute;
+  white-space: pre;
+  overflow: visible;
+}
+
+/* 多片段行（同行不同 x/不同字号的文字片段）：绝对锚定到片段原始坐标，
+   各片段独立基线，互不干扰 */
+.pdf-inline-editor .pdf-edit-seg {
+  position: absolute;
+  white-space: pre;
+}
+
+/* 扩展段包裹（下一段落）：折叠隐藏时不占位，展开后自然接排 */
+.pdf-inline-editor .pdf-edit-extra {
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+.pdf-inline-editor .pdf-edit-line:empty::before {
+  content: '\00a0';
+  visibility: hidden;
+}
+
+.pdf-inline-editor ::selection,
 .pdf-inline-editor::selection {
   background: rgba(35, 131, 226, 0.32);
 }

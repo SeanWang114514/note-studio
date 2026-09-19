@@ -1,0 +1,17 @@
+name: note_studio_dart_pdf_editor
+description: Same-origin Flutter web PDF editor bridge for Note Studio
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: ^3.5.0
+  flutter: '>=3.24.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: ^0.20.2
+  dart_pdf_editor: ^3.3.1
+  dart_pdf_editor_assets: ^3.3.1
+flutter:
+  uses-material-design: true

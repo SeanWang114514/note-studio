@@ -22,3 +22,19 @@ release/
 cache/
 dom_*.txt
 *.log
+
+# 本地临时工作目录（一次性测试脚本、截图、浏览器 profile 等）
+tmp/
+
+# Windows 保留名文件：`> nul` 重定向会真的建出一个叫 nul 的文件
+nul
+
+# 本地测试用 PDF（体积大、可随时重新生成；测试脚本从 dev server 取它们）
+public/test-*.pdf
+
+# 第三方 PDF 编辑器的运行时产物（合计约 115MB，不进仓库）
+# 运行时由 OpenPdfStudioView.jsx 从 public/ 下按路径 iframe 加载；需要时按 README
+# 「未入库的运行时目录」一节自备（dart-pdf-editor 的源码在 dart-pdf-editor-web/，已入库）
+public/dart-pdf-editor/
+public/dart-pdf-editor.staging/
+public/open-pdf-studio/

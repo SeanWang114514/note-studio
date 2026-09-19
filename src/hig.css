@@ -1,0 +1,2190 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Apple HIG 外观层 — hig.css
+   ───────────────────────────────────────────────────────────────────
+   本文件是「笔记工作台」的 Apple Human Interface Guidelines 重设计层，
+   在 styles.css 之后加载，用与既有规则相同的选择器覆盖外观。
+
+   设计取向：把应用做成一台 macOS/iOS 原生文档应用的样子。三条原则：
+   1) 层级靠材质与描边，不靠重阴影 —— 侧边栏/工具栏用 vibrancy 材质，
+      内容区用 systemBackground，浮层用 popover 材质 + 单一柔和投影。
+   2) 控件尺寸对齐 HIG —— 常规控件高 28pt、行高 28、圆角 6/8/10/12，
+      命中区不小于 28×28。
+   3) 强调色只用于「可交互 / 已选中」—— systemBlue 承担选中、焦点环与
+      主按钮；其余一律用 label / separator / fill 体系的中性色。
+
+   约束：本层不触碰定位与分层属性（position / inset / z-index /
+   pointer-events），因此批注画布、PDF 分层、拖拽手柄等行为不受影响。
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 基础排版与交互 ─────────────────────────────────── */
+
+body {
+  font-size: 13px;
+  line-height: 1.47059;
+  letter-spacing: -0.01em;
+  background: var(--bg);
+  color: var(--text);
+}
+
+::selection {
+  background: rgba(0, 122, 255, 0.22);
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+/* macOS 覆盖式滚动条：默认低调，悬停加深 */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3.5px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  background-color: rgba(0, 0, 0, 0.26);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.42);
+}
+
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.28);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.45);
+  }
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--text);
+}
+
+::placeholder {
+  color: var(--text-muted);
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+}
+
+/* ── 2. 应用外壳：侧边栏 source list + 标签栏 ───────────── */
+
+.app {
+  background: var(--bg-subtle);
+}
+
+/* 桌面宽度单独声明，避免覆盖 styles.css 里的移动端抽屉布局 */
+@media (min-width: 901px) {
+  .sidebar {
+    width: 232px;
+  }
+}
+
+.sidebar {
+  background: var(--material-sidebar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-brand {
+  height: 52px;
+  padding: 0 16px;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.sidebar-brand svg {
+  color: var(--accent);
+}
+
+.sidebar-brand em {
+  font-size: var(--text-caption2);
+  font-weight: 500;
+  /* 提示类文字统一用 --text-secondary：0.38 的那种灰在浅底上只有 ~2:1，读起来太吃力。
+     --text-muted(0.38) 只留给 disabled 与纯装饰。 */
+  color: var(--text-secondary);
+  letter-spacing: 0;
+}
+
+.folder-btn {
+  margin: 0 12px 10px;
+  padding: 0 10px;
+  height: 30px;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--text-footnote);
+  font-weight: 500;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.folder-btn:hover {
+  background: var(--bg-hover);
+}
+
+.side-nav {
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nav-item {
+  height: 28px;
+  padding: 0 8px;
+  gap: 8px;
+  margin: 0 0 1px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-footnote);
+  font-weight: 500;
+  color: var(--text);
+  transition: background-color 0.12s ease;
+}
+
+.nav-item svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+}
+
+.nav-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.nav-item.active svg {
+  color: #fff;
+}
+
+/* 「最近打开」分组标题：HIG sidebar section header */
+.tree-title {
+  padding: 14px 16px 5px;
+  font-size: var(--text-caption2);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.tree-scroll {
+  padding: 0 8px 8px;
+}
+
+.tree-row {
+  height: 28px;
+  padding: 0 8px;
+  gap: 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-footnote);
+  color: var(--text);
+  transition: background-color 0.12s ease;
+}
+
+.tree-row:hover {
+  background: var(--bg-hover);
+}
+
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-empty {
+  padding: 6px 8px;
+  font-size: var(--text-caption1);
+  color: var(--text-muted);
+}
+
+.main {
+  background: var(--bg);
+}
+
+/* 标签栏：材质工具栏 + 胶囊标签（HIG 窗口标签） */
+.tabbar {
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+/* 桌面尺寸：移动端的高度由 styles.css 的窄屏规则接管 */
+@media (min-width: 761px) {
+  .tabbar {
+    height: 40px;
+    min-height: 40px;
+    gap: 2px;
+    padding: 0 8px;
+  }
+
+  .tab {
+    height: 26px;
+    padding: 0 6px 0 9px;
+    font-size: var(--text-caption1);
+  }
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.tab-close {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  color: var(--text-muted);
+}
+
+.tab-close:hover {
+  background: var(--fill-secondary);
+  color: var(--text);
+}
+
+.content {
+  background: var(--bg);
+}
+
+/* ── 3. 首页（欢迎页）─────────────────────────────────── */
+
+.home {
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+@media (min-width: 761px) {
+  .home {
+    padding: 36px 40px 48px;
+  }
+}
+
+.home-header h1 {
+  margin: 0 0 4px;
+  font-size: var(--text-title1);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+}
+
+.home-header p,
+.home-header-row p {
+  font-size: var(--text-footnote);
+  color: var(--text-secondary);
+}
+
+.home-header-actions {
+  gap: 8px;
+}
+
+.home-hint {
+  margin-top: 20px;
+  font-size: var(--text-caption1);
+  color: var(--text-muted);
+}
+
+.home-empty p {
+  font-size: var(--text-subhead);
+  color: var(--text-secondary);
+}
+
+.recent-grid {
+  margin-top: 22px;
+  gap: 16px;
+}
+
+.recent-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+
+.recent-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.card-thumb {
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.card-name {
+  font-size: var(--text-footnote);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.card-meta {
+  font-size: var(--text-caption2);
+  color: var(--text-muted);
+}
+
+.card-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #fff;
+  font-size: var(--text-caption2);
+  font-weight: 600;
+}
+
+.thumb-snippet {
+  font-size: var(--text-caption1);
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+/* ── 4. 工具栏与通用控件 ──────────────────────────────── */
+
+.doc-toolbar {
+  min-height: 44px;
+  padding: 7px 12px;
+  gap: 8px;
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar-title {
+  font-size: var(--text-footnote);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* 分组工具条：HIG 工具栏里成组的控件底色 */
+.tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--fill-quaternary);
+}
+
+.tool-group + .tool-group {
+  margin-left: 2px;
+}
+
+.toolbar-hint {
+  font-size: var(--text-caption1);
+  /* 「N 条批注」/「阅读 + 批注模式…」都是要读的提示，不是装饰：用 --text-secondary（≈4.4:1） */
+  color: var(--text-secondary);
+}
+
+.tool-btn {
+  height: 26px;
+  padding: 0 8px;
+  gap: 5px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tool-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.tool-btn.active {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.tool-btn.primary {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.tool-btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.06);
+}
+
+.tool-btn.danger {
+  color: var(--danger);
+}
+
+.tool-btn.danger:hover:not(:disabled) {
+  background: rgba(255, 59, 48, 0.12);
+}
+
+.tool-btn:disabled {
+  opacity: 0.38;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.icon-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.primary-btn {
+  height: 30px;
+  padding: 0 14px;
+  gap: 6px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--text-footnote);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+  transition: filter 0.12s ease;
+}
+
+.primary-btn:hover {
+  filter: brightness(1.06);
+}
+
+/* 分段控件（HIG Segmented Control） */
+.seg-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--fill-tertiary);
+}
+
+.seg-btn {
+  height: 22px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+  transition: background-color 0.12s ease;
+}
+
+.seg-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* 笔画 / 擦除范围预览：拖「粗细」「大小」滑杆时显示在屏幕正中。
+   浅底卡片（不是深色 HUD）—— 笔迹颜色多为深色，深底上看不出来。 */
+.size-preview-hud {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+  padding: 20px 24px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  pointer-events: none;
+}
+
+.size-preview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 64px;
+}
+
+.size-preview-stroke {
+  display: block;
+  border-radius: 999px;
+}
+
+.size-preview-ring {
+  display: block;
+  border: 1.5px dashed var(--accent);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.size-preview-caption {
+  font-size: var(--text-subhead);
+  font-weight: 600;
+}
+
+.size-preview-hint {
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+/* 鼠标框选（框选批注）：macOS 风格 —— 淡蓝半透明填充 + 1px 蓝描边，不吃指针事件 */
+.ann-marquee {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+.seg-btn.active {
+  /* 选中态只换底板（浅色浮起），文字颜色必须保持不变：
+     styles.css 里旧的 .seg-btn.active 写着 color:#fff，若不动它，
+     白底 + 白字 = 文字与底色重合、整条看不见（图形/橡皮擦弹层的「直线」「像素橡皮」）。 */
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+.zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--fill-quaternary);
+}
+
+.zoom-value {
+  min-width: 48px;
+  text-align: center;
+  font-size: var(--text-caption1);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Ribbon（若被启用）：HIG 工具栏外观 */
+.ribbon {
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--border);
+}
+
+.ribbon-tabs {
+  height: 30px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+}
+
+.ribbon-tab {
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.ribbon-tab.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.ribbon-content {
+  background: transparent;
+}
+
+.ribbon-btn {
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.ribbon-btn:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+}
+
+.ribbon-btn.active {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.ribbon-group {
+  border-right: 1px solid var(--border);
+}
+
+.ribbon-group-label {
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* 色板与粗细滑块 */
+.swatch {
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+.swatch.active {
+  box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 4px var(--accent);
+}
+
+/* 粗细 / 大小 滑块：输入框自带一块白色底板，压在标签下方会看着像「底色和文字重合」。
+   这里把输入框底板去掉（只留系统绘制的轨道与滑块）、固定盒子高度，
+   并让标签与轨道之间保持稳定间距 —— 标签文字始终是原来的灰色 --text-secondary。 */
+.size-range {
+  display: block;
+  width: 100%;
+  height: 18px;
+  margin: 2px 0 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+/* 弹出式小面板（HIG Popover） */
+.popover-backdrop {
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.pen-popover,
+.eraser-popover {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--material-popover);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+}
+
+.pop-title,
+.pop-label {
+  font-size: var(--text-caption1);
+  font-weight: 600;
+  color: var(--text-secondary);
+  /* 行高固定：文字框高度与滑块轨道彻底分开，轨道不会顶到灰色文字上 */
+  line-height: 18px;
+}
+
+.pop-label {
+  margin-bottom: 8px;
+}
+
+/* 选中项的图标跟随文字颜色（避免出现「灰图标 + 白文字」这种半隐形状态） */
+.seg-btn .eraser-option-icon {
+  color: currentColor;
+}
+
+/* ── 5. 浮层：sheet / 对话框 / HUD ─────────────────────── */
+
+.model-modal-overlay,
+.ocr-overlay,
+.speech-overlay,
+.speech-prompt-overlay {
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.model-modal,
+.settings-modal,
+.ocr-modal,
+.speech-modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--material-popover);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.model-modal-header,
+.ocr-modal-header,
+.speech-modal-header {
+  height: 52px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-subhead);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.model-modal-body,
+.settings-body,
+.ocr-body,
+.speech-body {
+  padding: 16px 18px;
+  font-size: var(--text-footnote);
+}
+
+.settings-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section-title {
+  font-size: var(--text-caption1);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-transform: none;
+}
+
+.settings-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--fill-quaternary);
+}
+
+/* 底部说明文字：HIG 脚注，与按钮同一行垂直居中，不再挤到按钮下方 */
+.settings-save-row .ocr-model-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-caption2);
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+/* 布局面板：窗口与面板（模型相关分区已移除） */
+.settings-hint {
+  margin: 0 0 6px;
+  font-size: var(--text-caption2);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-panel-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-panel-row:last-of-type {
+  border-bottom: none;
+}
+
+.settings-panel-row .ocr-model-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-footnote);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-panel-meta {
+  font-size: var(--text-caption2);
+  color: var(--text-muted);
+}
+
+.settings-panel-row .tool-btn {
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: var(--text-footnote);
+}
+.model-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.model-card-name {
+  font-size: var(--text-footnote);
+  font-weight: 600;
+}
+
+.model-card-desc,
+.model-card-label,
+.model-empty-hint,
+.model-server-hint {
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.model-kind-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--fill-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-caption2);
+  font-weight: 600;
+}
+
+.model-progress-bar,
+.convert-progress-track {
+  border-radius: 999px;
+  background: var(--fill-tertiary);
+  overflow: hidden;
+}
+
+.model-progress-fill,
+.convert-progress-fill {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* 状态提示：HUD（macOS 通知条观感） */
+.toast {
+  padding: 9px 16px;
+  border: none;
+  border-radius: 999px;
+  background: var(--material-hud);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  color: #fff;
+  font-size: var(--text-footnote);
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+}
+
+.toast.success,
+.toast.error {
+  background: var(--material-hud);
+  color: #fff;
+}
+
+.toast.success::before,
+.toast.error::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.toast.error::before {
+  background: var(--danger);
+}
+
+/* 斜杠菜单 */
+.slash-menu {
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--material-popover);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+}
+
+.slash-item {
+  border-radius: var(--radius-sm);
+  font-size: var(--text-footnote);
+}
+
+.slash-item:hover,
+.slash-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── 6. 批注面板与批注元素 ─────────────────────────────── */
+
+.ann-panel {
+  background: var(--material-sidebar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-left: 1px solid var(--border);
+}
+
+.ann-panel-title {
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-footnote);
+  font-weight: 600;
+  /* 标题栏可能有两个动作按钮（多选时的删除 + 折叠）：左侧「批注 + 数量」左对齐，
+     动作按钮靠右成组 —— 原来的 space-between 会把 4 个元素摊平到整行 */
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.ann-panel-title > .ann-panel-collapse {
+  margin-left: auto;
+}
+
+.ann-panel-empty {
+  padding: 16px 14px;
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.ann-panel-item {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption1);
+  transition: background-color 0.12s ease;
+}
+
+.ann-panel-item:hover {
+  background: var(--bg-hover);
+}
+
+.ann-panel-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ann-panel-head {
+  font-size: var(--text-caption2);
+  font-weight: 600;
+  color: var(--text-secondary);
+  gap: 5px;
+}
+
+/* 条目里的颜色点：一眼看出这条手写/图形是什么颜色 */
+.ann-panel-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border: 0.5px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+}
+
+/* 多选时的「删除选中」按钮（与折叠按钮并排） */
+.ann-panel-bulk-del {
+  color: var(--accent);
+}
+
+.ann-panel-bulk-del:hover {
+  background: var(--accent-soft);
+}
+
+.ann-panel-text {
+  color: var(--text);
+}
+
+.ann-panel-input {
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: var(--text-caption1);
+}
+
+.connector-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.45;
+}
+
+.connector-line.selected {
+  opacity: 1;
+}
+
+/* 文本框批注（PDF/文档上的可编辑文本块，保持白底黑字） */
+.ann-text {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-sm);
+  color: #000;
+  font-size: var(--text-footnote);
+}
+
+.ann-text.selected {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.ann-text-editor {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: #000;
+  font-size: var(--text-footnote);
+}
+
+/* 批注标记（便签） */
+.ann-comment {
+  border-radius: var(--radius-sm) var(--radius-sm) var(--radius-sm) 2px;
+  background: var(--sys-yellow);
+  color: rgba(60, 45, 0, 0.9);
+  box-shadow: var(--shadow);
+}
+
+.ann-comment.selected {
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+}
+
+.ann-comment-pop {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--material-popover);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+}
+
+.ann-comment-pop textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: var(--text-caption1);
+}
+
+.ann-del {
+  border-radius: var(--radius-xs);
+  background: var(--material-popover);
+  color: var(--danger);
+}
+
+/* 图形选中控件：HIG 控制点 */
+.shape-handle {
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.shape-move-area {
+  border-radius: var(--radius-sm);
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.shape-delete {
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.shape-draft {
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.shape-draft-label {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--material-hud);
+  color: #fff;
+  font-size: var(--text-caption2);
+  font-weight: 600;
+}
+
+.text-draft {
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-footnote);
+}
+
+/* ── 7. 文档视图（docx / md / epub / excel / 文本）─────── */
+
+.doc-view {
+  background: var(--bg);
+}
+
+.doc-body-row {
+  background: var(--bg);
+}
+
+.docx-scroll,
+.excel-scroll,
+.md-pane {
+  background: var(--bg-subtle);
+}
+
+/* 文档纸张：内容区用一张带细描边的白纸承载（HIG 文档式布局） */
+.docx-doc,
+.md-preview-surface,
+.epub-doc,
+.pdf-text-doc {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.docx-body,
+.epub-body,
+.md-body,
+.pdf-text-body {
+  font-size: var(--text-subhead);
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.docx-body h1,
+.epub-body h1,
+.md-body h1 {
+  font-size: var(--text-title1);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+}
+
+.docx-body h2,
+.epub-body h2,
+.md-body h2 {
+  font-size: var(--text-title3);
+  font-weight: 700;
+  letter-spacing: -0.018em;
+}
+
+.docx-body h3,
+.epub-body h3,
+.md-body h3 {
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.docx-body blockquote,
+.md-body blockquote,
+.epub-body blockquote {
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.docx-body code,
+.md-body code,
+.epub-body code {
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--fill-quaternary);
+  font-size: 0.92em;
+}
+
+.md-editor {
+  background: var(--bg-elevated);
+  font-size: var(--text-subhead);
+  line-height: 1.6;
+}
+
+/* Excel 网格 */
+.excel-grid .corner,
+.excel-grid .row-head,
+.excel-grid .col-head {
+  border-color: var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+}
+
+.excel-grid td {
+  border-color: var(--border);
+  font-size: var(--text-footnote);
+}
+
+.excel-grid td.in-range {
+  background: var(--accent-soft);
+}
+
+.sheet-tab {
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.sheet-tab.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.sheet-tabs {
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-top: 1px solid var(--border);
+}
+
+.cell-editor {
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-footnote);
+}
+
+.office-placeholder {
+  color: var(--text-secondary);
+}
+
+.office-name {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.office-hint {
+  font-size: var(--text-footnote);
+  color: var(--text-secondary);
+}
+
+.loading {
+  color: var(--text-secondary);
+  font-size: var(--text-footnote);
+}
+
+.file-error {
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 59, 48, 0.35);
+  border-radius: var(--radius-md);
+  background: rgba(255, 59, 48, 0.08);
+  color: var(--danger);
+  font-size: var(--text-footnote);
+}
+
+/* ── 8. PDF 查看器 ────────────────────────────────────── */
+
+.pdf-viewer-shell {
+  background: var(--bg-subtle);
+}
+
+.pdf-viewer-shell .pdf-toolbar {
+  min-height: 44px;
+  padding: 7px 12px;
+  gap: 8px;
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-bottom: 1px solid var(--border);
+}
+
+.pdf-viewer-shell .pdf-zoom-pct {
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.pdf-viewer-shell .pdf-toolbar .toolbar-hint {
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.pdf-thumbs {
+  /* 默认/最小宽度以 lib/panelLayout.js 的 PANEL_DEFAULTS.pdfThumbs 为准（136 / min 124），
+     这里只做兜底：面板窄于 ~124px 时标题行的折叠按钮会被 overflow 裁掉。 */
+  width: 136px;
+  min-width: 124px;
+  background: var(--material-sidebar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-right: 1px solid var(--border);
+}
+
+.pdf-thumbs-title {
+  height: 34px;
+  padding: 0 10px;
+  gap: 6px;
+  flex-wrap: nowrap;
+  font-size: var(--text-caption2);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* 「页面 / 1」计数小胶囊：底板必须是极浅填充，文字保持原来的灰色（--text-secondary）。
+   旧写法是 background: var(--bg-active)（灰底）配 color: var(--text-muted)（灰字），
+   两者同色系 → 底色和文字重合看不清；且胶囊会被挤到换行、变成一块灰疙瘩。
+   所以：单行不换行 + 底板降到 --fill-quaternary + 字号/行高固定。 */
+.pdf-thumbs-title span {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--fill-quaternary);
+  color: var(--text-secondary);
+  font-size: var(--text-caption2);
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* 面板被拖到很窄时：先压「页面」这两个字，保住右侧的页数胶囊和折叠按钮不被裁掉 */
+.pdf-thumbs-title > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pdf-thumb-item {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
+  /* canvas 是「替换元素」（replaced element），它的 min-content 尺寸就是 width 属性给的 100px；
+     flex 项默认 min-width:auto → .pdf-thumb-item 被撑到 100px+，比列表宽（约 87px），
+     canvas 溢出面板，底部就永远挂着一条横向滚动条（用户截图左下那条灰滑块）。
+     min-width:0 允许收缩，配合 .pdf-thumb-canvas 的 max-width:100% 彻底消掉横向溢出。 */
+  min-width: 0;
+}
+
+.pdf-thumb-item:hover {
+  background: var(--bg-hover);
+}
+
+.pdf-thumb-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.pdf-thumb-item span {
+  font-size: var(--text-caption2);
+  color: var(--text-secondary);
+}
+
+.pdf-thumb-canvas {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: #fff;
+}
+
+.pdf-scroll {
+  background: var(--bg-subtle);
+}
+
+/* PDF 纸张：始终白纸（与「预览」App 一致），靠细描边 + 轻投影浮起 */
+.pdf-viewer-shell .pdf-canvas-container {
+  background: #fff;
+  border-radius: 2px;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+
+/* 浮动页码/缩放条：HIG 悬浮工具条材质 */
+.pdf-page-controls {
+  padding: 4px 6px;
+  gap: 2px;
+  border-radius: var(--radius-md);
+  background: var(--material-hud);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.pdf-page-controls button {
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.pdf-page-controls button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.pdf-page-controls .pdf-page-label {
+  font-size: var(--text-caption1);
+  font-variant-numeric: tabular-nums;
+}
+
+.pdf-page-controls .pdf-page-controls-sep {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* 单页模式（工具栏「单页模式/连续模式」）：一屏一页。
+   整页适配在 PdfViewer.setViewMode() 里做（fitPage），翻页由滚轮（PdfEditorView 的 wheel 处理）
+   和底部上下页按钮完成；这里用 proximity 吸附兜个底，让停下来时页首对齐。
+   用 proximity 而不是 mandatory：mandatory 会把页内的小幅滚动直接弹回原处，
+   放大到一页装不下时就完全没法滚动页面内部了。
+   scroll-padding-top 必须等于 .pdf-pages 的上内边距（12px），否则吸附后页面顶部会被页码条压住。 */
+.pdf-scroll--single {
+  scroll-snap-type: y proximity;
+  scroll-padding-top: 12px;
+  overscroll-behavior-y: contain;
+}
+
+.pdf-scroll--single .pdf-pages {
+  gap: 0;
+  /* 上下各 12px：页面高度是 clientHeight - 32，加上这两个内边距刚好一屏放得下 */
+  padding: 12px 16px;
+}
+
+.pdf-scroll--single .pdf-page {
+  scroll-snap-align: start;
+}
+
+.pdf-scroll--single .pdf-page + .pdf-page {
+  margin-top: 8px;
+}
+
+.pdf-text-doc {
+  padding: 28px 32px;
+}
+
+/* ── 9. 组件补充：文字识别 / 语音 / 模型 / PDF Studio ─── */
+
+/* 首页次级按钮：HIG Tinted Button */
+.home-ocr-btn {
+  height: 30px;
+  padding: 0 14px;
+  gap: 6px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-footnote);
+  font-weight: 600;
+}
+
+.home-ocr-btn:hover {
+  background: rgba(0, 122, 255, 0.18);
+}
+
+/* HIG 文本输入框（macOS 控制文字 13px） */
+.ocr-select,
+.speech-input,
+.settings-body input[type='text'],
+.settings-body input[type='number'] {
+  flex: 0 0 auto;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--text-footnote);
+}
+
+.ocr-select {
+  padding-right: 26px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+    linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.ocr-select:focus,
+.speech-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px var(--accent-soft);
+  outline: none;
+}
+
+/* HIG 普通按钮 / 描边按钮 */
+.ocr-btn,
+.ocr-insert-btn,
+.ocr-link-btn,
+.ocr-undo-btn,
+.ocr-redo-btn {
+  height: 28px;
+  padding: 0 11px;
+  gap: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+  transition: background-color 0.12s ease;
+}
+
+.ocr-btn:hover,
+.ocr-insert-btn:hover,
+.ocr-link-btn:hover,
+.ocr-undo-btn:hover,
+.ocr-redo-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* 主操作：HIG Filled Button */
+.ocr-run {
+  height: 28px;
+  padding: 0 13px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: var(--text-caption1);
+  font-weight: 600;
+}
+
+.ocr-run:disabled {
+  opacity: 0.4;
+}
+
+/* 工具切换 / 选项开关：HIG Toggle */
+.ocr-draw-tool,
+.ocr-opt,
+.speech-space-option,
+.settings-speech-space-option {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+}
+
+.ocr-draw-tool:hover,
+.ocr-opt:hover,
+.speech-space-option:hover,
+.settings-speech-space-option:hover {
+  background: var(--bg-hover);
+}
+
+.ocr-draw-tool.active,
+.ocr-opt.on,
+.speech-space-option.on,
+.settings-speech-space-option.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.eraser-mode-group {
+  border-radius: var(--radius);
+  background: var(--fill-tertiary);
+}
+
+.eraser-option-icon {
+  color: var(--text-secondary);
+}
+
+/* OCR 结果列表 */
+.ocr-result,
+.ocr-lines {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.ocr-line:hover {
+  background: var(--bg-hover);
+}
+
+.ocr-line-idx,
+.ocr-line-score,
+.ocr-tip,
+.ocr-opt-hint,
+.ocr-status,
+.ocr-model-hint,
+.ocr-empty-text,
+.pdf-text-empty,
+.speech-hint,
+.speech-status {
+  font-size: var(--text-caption1);
+  color: var(--text-muted);
+}
+
+.ocr-spinner {
+  color: var(--accent);
+}
+
+/* 语音识别：主按钮为圆形 Filled Button */
+.speech-mic-btn {
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: var(--shadow-md);
+}
+
+.speech-mic-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.speech-mic-btn.recording {
+  background: var(--danger);
+}
+
+.speech-mic-btn:disabled {
+  opacity: 0.4;
+}
+
+.speech-bars .speech-bar {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.speech-result-box {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.speech-result-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px var(--accent-soft);
+}
+
+/* 模型下载提示 / 语音提示：小尺寸 sheet */
+.model-prompt-overlay,
+.speech-prompt-overlay {
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.model-prompt-box,
+.speech-prompt-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--material-popover);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg);
+}
+
+.model-prompt-icon,
+.speech-prompt-icon {
+  color: var(--accent);
+}
+
+.model-prompt-title,
+.speech-prompt-title {
+  font-size: var(--text-subhead);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.model-prompt-text,
+.speech-prompt-desc {
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+/* 顶栏 / 弹窗标题里的图标统一取强调色 */
+.model-modal-header svg,
+.ocr-modal-header svg,
+.speech-modal-header svg {
+  color: var(--accent);
+}
+
+.model-card-ok svg,
+.status-ok svg {
+  color: var(--success);
+}
+
+.status-warn svg,
+.file-error svg {
+  color: var(--danger);
+}
+
+.home-empty svg {
+  color: var(--text-muted);
+}
+
+/* Open PDF Studio 外壳 */
+.open-pdf-studio-shell {
+  background: var(--bg-subtle);
+}
+
+.open-pdf-studio-status,
+.open-pdf-studio-recognition-bar {
+  border-bottom: 1px solid var(--border);
+  background: var(--material-toolbar);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  font-size: var(--text-caption1);
+  color: var(--text-secondary);
+}
+
+.open-pdf-studio-brand {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.open-pdf-studio-frame {
+  background: var(--bg-subtle);
+}
+
+.open-pdf-studio-recognition-bar button {
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--text-caption1);
+  font-weight: 500;
+}
+
+.open-pdf-studio-recognition-bar button:hover {
+  background: var(--bg-hover);
+}
+
+/* 服务状态横幅：HIG 提示条（着色底 + 同色系文字） */
+.pdf-service-banner {
+  border: 1px solid rgba(255, 149, 0, 0.35);
+  border-radius: var(--radius);
+  background: rgba(255, 149, 0, 0.12);
+  color: #8a5a00;
+  font-size: var(--text-caption1);
+}
+
+.pdf-service-banner.connected {
+  border-color: rgba(52, 199, 89, 0.35);
+  background: rgba(52, 199, 89, 0.12);
+  color: #1a7a3a;
+}
+
+.pdf-service-banner.offline {
+  border-color: rgba(255, 149, 0, 0.35);
+  background: rgba(255, 149, 0, 0.12);
+  color: #8a5a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  .pdf-service-banner,
+  .pdf-service-banner.offline {
+    color: #ffcf7a;
+  }
+  .pdf-service-banner.connected {
+    color: #7ee2a0;
+  }
+}
+
+/* 状态点与徽标 */
+.dirty-dot,
+.recording {
+  background: var(--accent);
+}
+
+.downloaded,
+.downloading,
+.offline,
+.status-ok,
+.status-warn {
+  font-size: var(--text-caption1);
+}
+
+.status-ok,
+.downloaded {
+  color: var(--success);
+}
+
+.status-warn,
+.offline {
+  color: var(--warning);
+}
+
+/* 移动端菜单按钮 */
+.mobile-menu-button {
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.mobile-menu-button:hover {
+  background: var(--bg-hover);
+}
+
+/* ── 11. 性能：只在窗口级 chrome 保留毛玻璃 ──────────────────────
+   毛玻璃（backdrop-filter）会让 Chromium 为每个表面建立 backdrop root，滚动时逐帧重算。
+   实测（45 页 PDF / dpr2 / 热身后再连续滚动 60 步）：
+     · 保留全部毛玻璃      主线程 Task 913ms
+     · 全部关闭            主线程 Task 822ms
+   即常驻毛玻璃的净成本约 1.5ms/步（headless 软件栅格，真实 GPU 更低），
+   但每多一个表面就多一份 backdrop root，所以这里只保留「窗口级」chrome 的毛玻璃
+   （侧边栏、标签栏、工具栏——macOS 上真正有 vibrancy 的位置），
+   文档内的面板（缩略图栏、批注栏、表格标签栏、识别条、浮动页码条）改为半透明填充：
+   它们是随文档一起滚动的表面，数量多、面积大，收益最小、风险最大。 */
+
+.pdf-thumbs,
+.ann-panel,
+.sheet-tabs,
+.ribbon,
+.open-pdf-studio-recognition-bar,
+.pdf-page-controls,
+.pdf-zoom-bar,
+.document-toolbar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* ── 12. 工具有设置时的角标（提示再点一次 / 双击 / 右键可打开设置）── */
+
+.doc-toolbar .icon-btn.has-settings {
+  position: relative;
+}
+
+.doc-toolbar .tool-settings-dot {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  pointer-events: none;
+}
+
+.doc-toolbar .icon-btn.has-settings.active .tool-settings-dot {
+  background: #fff;
+  opacity: 0.9;
+}
+
+.doc-toolbar .icon-btn.has-settings:hover .tool-settings-dot {
+  background: var(--accent);
+}
+
+.doc-toolbar .icon-btn.has-settings.active:hover .tool-settings-dot {
+  background: #fff;
+}
+
+/* ── 13. 栏目分隔条：自由缩放 + 折叠（HIG 分隔条）────────────
+   命中区 9px（视觉线 1px），悬停/拖动时线加粗并变 systemBlue；
+   键盘可达：方向键微调、Home/End 到极值、回车折叠、双击复位。 */
+
+.panel-splitter {
+  position: relative;
+  flex: 0 0 auto;
+  width: 9px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+  z-index: 3;
+}
+
+.panel-splitter-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+  transition: background 0.12s ease, width 0.12s ease;
+}
+
+.panel-splitter:hover .panel-splitter-grip,
+.panel-splitter:focus-visible .panel-splitter-grip,
+.panel-splitter.dragging .panel-splitter-grip {
+  width: 3px;
+  background: var(--accent);
+}
+
+.panel-splitter:focus-visible {
+  outline: none;
+}
+
+.panel-splitter:focus-visible .panel-splitter-grip {
+  box-shadow: 0 0 0 3.5px var(--accent-soft);
+}
+
+body.panel-resizing,
+body.panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-splitter-grip {
+    transition: none;
+  }
+}
+
+/* 折叠态：侧边栏整体隐藏（⌘B 或标签栏按钮恢复）。
+   窄屏下侧边栏是 fixed 抽屉，靠 transform 显示，不能 display:none —— 否则抽屉再也打不开。 */
+@media (min-width: 761px) {
+  .sidebar.collapsed {
+    display: none;
+  }
+}
+
+/* 触摸端不提供拖拽分隔条（改用按钮折叠），避免误触 */
+@media (max-width: 760px) {
+  .panel-splitter {
+    display: none;
+  }
+
+  /* 窄屏侧边栏是抽屉（左上角菜单键打开），再放折叠开关只会让人困惑 */
+  .tabbar-panel-toggle {
+    display: none;
+  }
+}
+
+.tabbar-panel-toggle {
+  flex: 0 0 auto;
+}
+
+.ann-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ann-panel-title .ann-panel-collapse,
+.pdf-thumbs-collapse {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+}
+
+.ann-panel-title .ann-panel-collapse:hover,
+.pdf-thumbs-collapse:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.panel-toggle-group {
+  flex: 0 0 auto;
+}
+
+/* ── 工具栏单行不换行：窄屏逐级收起次要元素（换行会让文档区跳动）── */
+@media (max-width: 1420px) {
+  .doc-toolbar .ocr-btn .btn-text {
+    display: none;
+  }
+
+  .doc-toolbar .ocr-btn {
+    padding: 0 8px;
+  }
+
+  /* 查看工具栏（适合宽度/适合页面/缩放/单页模式/保存批注）同样收掉文字标签，保证单行 */
+  .pdf-viewer-shell .pdf-toolbar .tool-btn .btn-text {
+    display: none;
+  }
+
+  .pdf-viewer-shell .pdf-toolbar .tool-btn {
+    padding: 0 8px;
+  }
+}
+
+@media (max-width: 1220px) {
+  .doc-toolbar .toolbar-hint {
+    display: none;
+  }
+}
+
+@media (max-width: 1080px) {
+  .doc-toolbar .zoom-group {
+    display: none;
+  }
+
+  /* 「新建一页」在窄屏收起文字（与 pdf-toolbar 的按钮同约定）：它是文字按钮里最宽的一个，
+     收掉后工具栏不容易被挤出可视区（原来 nowrap 会把右边一整组按钮裁掉，点不到）。 */
+  .doc-toolbar .new-page-btn .btn-text {
+    display: none;
+  }
+
+  .doc-toolbar .new-page-btn {
+    padding: 0 8px;
+  }
+
+  /* 单行排不下时允许换行，而不是把右侧按钮裁掉。
+     注意：这与「文字格式栏不能推挤文档」不冲突 —— 格式栏已经改成 portal 到 body 的浮层，
+     它的出现/消失完全不参与工具栏排版；这里只有窗口本身变窄时才会多出一行。 */
+  .doc-toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+/* ── 14. 折叠细栏：宽度/按钮放大到可轻松点中，展开按钮固定在右上角 ── */
+
+.panel-rail {
+  flex: 0 0 auto;
+  width: 40px;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 6px;
+  background: var(--material-sidebar);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.panel-rail.ann-rail {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.panel-rail-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.panel-rail-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.panel-rail-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--accent-soft);
+}
+
+/* 栏头折叠按钮：三个侧栏统一尺寸，且钉在右上角（标题行 sticky，不随内容滚走） */
+/* 图标永不被 flex 压扁：lucide 的 <svg> 是 flex 项，默认 flex-shrink:1，
+   在窄容器（手机上的工具栏、标签页关闭按钮、面板折叠按钮）里会被横向压扁 ——
+   实测 .tab-close 的 ✕ 只有 5x13、缩略图栏折叠按钮只有 10x13，
+   看起来「比别的图标小一圈」，其实是被挤扁了。 */
+svg {
+  flex-shrink: 0;
+}
+
+.panel-collapse-btn {
+  /* 与折叠细栏的展开按钮、工具栏面板开关保持同一档位（图标 16px）：
+     原来 22px 盒子里塞 13px 图标，在手机上明显比同屏其他「右上角」图标小一圈。 */
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+}
+
+.panel-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.sidebar-brand .sidebar-collapse {
+  /* 钉在侧边栏右上角（绝对定位，不受品牌行内容与内边距影响） */
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  margin-left: 0;
+}
+
+/* 侧边栏在文档流里（position: relative 作为右上角折叠按钮绝对定位的参考）。
+   必须限定在桌面宽度：窄屏下侧边栏是 styles.css 里的 fixed 抽屉（@media max-width:760px），
+   而媒体查询不增加优先级 —— 这条不设条件的 position:relative 写在后面，会盖掉抽屉的 fixed，
+   于是侧边栏虽然被 transform 移出屏幕，却仍占着 232px 文档流宽度：
+   主区被推到右边只剩一条缝，手机上打开 PDF 时页面宽度直接变成 0。 */
+@media (min-width: 761px) {
+  .sidebar {
+    position: relative;
+  }
+}
+
+.sidebar-brand {
+  padding-right: 34px;
+}
+
+.pdf-thumbs-title,
+.ann-panel-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: inherit;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 触摸端侧边栏是抽屉，不需要细栏 */
+@media (max-width: 760px) {
+  .panel-rail {
+    display: none;
+  }
+
+  .sidebar-brand .sidebar-collapse {
+    display: none;
+  }
+}
+
+/* ── 15. 窄屏：与 styles.css 的移动端规则协同 ──────────── */
+
+@media (max-width: 760px) {
+  body {
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  /* 触控目标保持 40pt 方形，避免出现窄长按钮 */
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .tool-btn {
+    height: 36px;
+  }
+
+  /* 移动端侧边栏是抽屉，需要不透明底色而非毛玻璃 */
+  .sidebar {
+    background: var(--bg-elevated);
+  }
+
+  .model-modal-header,
+  .ocr-modal-header,
+  .speech-modal-header {
+    height: 46px;
+    padding: 0 14px;
+  }
+}
+
+/* ── 11. 无障碍：尊重「减弱动态效果」────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

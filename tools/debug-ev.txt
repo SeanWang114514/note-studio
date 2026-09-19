@@ -1,0 +1,13 @@
+(function() {
+  var out = [];
+  var sels = document.querySelectorAll('[data-page]');
+  for (var i = 0; i < Math.min(sels.length, 10); i++) {
+    var s = sels[i];
+    out.push({
+      text: s.textContent.slice(0, 10),
+      lineIdx: s.dataset.lineIdx,
+      page: s.dataset.page
+    });
+  }
+  return out;
+})()

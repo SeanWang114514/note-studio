@@ -2,14 +2,14 @@
 """
 笔记工作台 本地转换服务
 ======================
-把浏览器里做不了的 PDF<->DOCX 转换放到本地 Python 进程：
-  * POST /api/pdf2docx   PDF 字节  -> DOCX 字节   （pdf2docx-plus）
+把浏览器里做不了的文档转换放到本地 Python 进程：
   * POST /api/docx2pdf   DOCX 字节 -> PDF 字节    （docx2pdf，走本机 Word）
   * POST /api/excel-edit xlsx 字节 + 单元格数据 -> xlsx 字节（openpyxl 修改）
+  * POST /api/v1/misc/flatten  Stirling-PDF 兼容的本地 PDF 定稿接口
   * GET  /health         健康检查 / 版本信息
 
 启动：python server/convert_server.py [--port 5198]
-默认监听 127.0.0.1:5198，带 CORS，供 http://127.0.0.1:5199 的页面直接调用。
+默认监听 127.0.0.1:5198，带 CORS，供本地 Web 页面直接调用。
 """
 import argparse
 import base64
@@ -17,8 +17,6 @@ import io
 import json
 import logging
 import os
-import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -28,28 +26,16 @@ import uuid
 import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    import fitz  # PyMuPDF：本地 PDF 定稿/扁平化
+    FITZ_VER = getattr(fitz, "__doc__", "").splitlines()[0] if getattr(fitz, "__doc__", None) else "installed"
+except Exception as e:  # noqa: BLE001
+    fitz = None
+    FITZ_VER = f"missing ({e})"
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("convert-server")
-
-try:
-    import pdf2docx_plus  # noqa: F401  (仅用于版本/可用性检测；转换在 convert_worker.py 子进程执行)
-except Exception as e:  # noqa: BLE001
-    PDF2DOCX_OK_IMPORT = False
-else:
-    PDF2DOCX_OK_IMPORT = True
-
-# PDF->DOCX 图片保真开关（默认开启，可用环境变量关闭）：
-#   NF_RECOVER_MISSING_IMAGES=0   关闭"缺失图片恢复"（修复复用图片对象被丢图，如每页重复 logo）
-#   NF_RASTERIZE_VECTORS=0        关闭"矢量图形栅格化"（修复图表/图示等矢量图整块消失）
-def _env_flag(name, default=True):
-    v = os.environ.get(name)
-    if v is None:
-        return default
-    return v.strip().lower() not in ("0", "false", "no", "off")
-
-_RECOVER_MISSING_IMAGES = _env_flag("NF_RECOVER_MISSING_IMAGES", True)
-_RASTERIZE_VECTORS = _env_flag("NF_RASTERIZE_VECTORS", True)
 
 try:
     import docx2pdf  # noqa: F401  (转换时使用)
@@ -57,13 +43,6 @@ except Exception as e:  # noqa: BLE001
     DOCX2PDF_OK_IMPORT = False
 else:
     DOCX2PDF_OK_IMPORT = True
-
-try:
-    from importlib.metadata import version as _pkg_ver
-    PDF2DOCX_VER = _pkg_ver("pdf2docx-plus")
-except Exception as e:  # noqa: BLE001
-    PDF2DOCX_VER = f"missing ({e})"
-PDF2DOCX_OK = PDF2DOCX_OK_IMPORT and not PDF2DOCX_VER.startswith("missing")
 
 try:
     from importlib.metadata import version as _pkg_ver2
@@ -88,61 +67,6 @@ except Exception:  # noqa: BLE001
 
 _MAX_BODY = 256 * 1024 * 1024  # 256MB 上限
 _docx2pdf_lock = threading.Lock()
-# 转换在独立子进程(convert_worker.py)中执行：进程级隔离，卡死可整体 kill，
-# 不会像线程那样留下孤儿线程把服务器进程拖死；并发请求各自独立互不阻塞。
-_WORKER_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "convert_worker.py")
-_PDF2DOCX_TIMEOUT_S = float(os.environ.get("NF_PDF2DOCX_TIMEOUT_S", "180"))  # 单次转换超时上限
-
-# ---- PDF->DOCX 结果缓存 ----
-# 同一 PDF（按内容 SHA-256 前缀）转换过一次后，docx 落在 cache/ 目录，
-# 下次打开同一文件直接返回缓存的 docx，不再重新转换。
-# 前端请求 /api/pdf2docx 时带 ?cache=<hash>；浏览器「设置 → 缓存管理」可查看/多选删除。
-_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
-
-
-def _cache_path(key):
-    if not key or not re.fullmatch(r"[0-9a-fA-F]{8,64}", key):
-        return None
-    return os.path.join(_CACHE_DIR, f"{key.lower()}.docx")
-
-
-def _cache_list():
-    """列出缓存 docx：[{key, size, mtime}]（按时间倒序）。"""
-    try:
-        os.makedirs(_CACHE_DIR, exist_ok=True)
-        items = []
-        for name in os.listdir(_CACHE_DIR):
-            if not name.endswith(".docx"):
-                continue
-            p = os.path.join(_CACHE_DIR, name)
-            try:
-                st = os.stat(p)
-                items.append({
-                    "key": name[:-5],
-                    "size": st.st_size,
-                    "mtime": st.st_mtime,
-                })
-            except Exception:  # noqa: BLE001
-                continue
-        items.sort(key=lambda it: it["mtime"], reverse=True)
-        return items
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def _cache_delete(keys):
-    """删除指定缓存（keys 为 hash 列表），返回删除成功数量。"""
-    n = 0
-    for k in keys:
-        p = _cache_path(k)
-        if p is None:
-            continue
-        try:
-            os.remove(p)
-            n += 1
-        except Exception:  # noqa: BLE001
-            pass
-    return n
 
 # ---- 转换进度（job 维度）----
 # 每个转换请求带一个 job id（?job=xxx），worker/服务端把进度写成 JSON 文件，
@@ -248,18 +172,6 @@ class Handler(BaseHTTPRequestHandler):
                 return v[:64]
         return None
 
-    @staticmethod
-    def _query_param(path, key):
-        """从查询串里取指定参数值（无则 None）。值截断到 64 字符防异常输入。"""
-        q = path.split("?", 1)
-        if len(q) < 2:
-            return None
-        for part in q[1].split("&"):
-            k, _, v = part.partition("=")
-            if k == key and v:
-                return v[:64]
-        return None
-
     def log_message(self, fmt, *args):  # 安静一点
         log.info("%s %s", self.address_string(), fmt % args)
 
@@ -274,11 +186,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send_json(200, {
                 "ok": True,
-                "pdf2docx": PDF2DOCX_VER,
                 "docx2pdf": DOCX2PDF_VER,
                 "openpyxl": OPENPYXL_VER,
                 "win32": WIN32_OK,
                 "word": _word_available(),
+                "pymupdf": FITZ_VER,
+                "stirling": {"local": True, "flatten": fitz is not None},
             })
         elif path.startswith("/api/progress/"):
             job = path[len("/api/progress/"):]
@@ -287,23 +200,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "no progress for job"})
             else:
                 self._send_json(200, {"ok": True, **data})
-        elif path == "/api/cache":
-            # GET /api/cache → 缓存文件列表（设置页显示/多选删除用）
-            self._send_json(200, {"ok": True, "files": _cache_list()})
         else:
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
-            if path == "/api/pdf2docx":
-                self._handle_pdf2docx()
-            elif path == "/api/docx2pdf":
+            if path == "/api/docx2pdf":
                 self._handle_docx2pdf()
             elif path == "/api/excel-edit":
                 self._handle_excel_edit()
-            elif path == "/api/cache/delete":
-                self._handle_cache_delete()
+            elif path == "/api/v1/misc/flatten":
+                self._handle_stirling_flatten()
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as e:  # noqa: BLE001
@@ -316,97 +224,40 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 pass
 
-    def _handle_cache_delete(self):
-        """POST /api/cache/delete  body: {"keys": ["hash1", "hash2", ...]}"""
+    def _handle_stirling_flatten(self):
+        """Stirling-PDF 兼容的本地 /api/v1/misc/flatten：扁平化批注/表单后返回 PDF。"""
+        if fitz is None:
+            self._send_json(500, {"error": "本地 PDF 引擎不可用：请安装 PyMuPDF（pip install pymupdf）"})
+            return
+        raw = self._read_body()
+        data = raw
+        content_type = self.headers.get("Content-Type", "")
+        if content_type.lower().startswith("multipart/form-data"):
+            try:
+                from email.parser import BytesParser
+                from email.policy import default as email_policy
+                envelope = (f"Content-Type: {content_type}\r\nContent-Length: {len(raw)}\r\n\r\n").encode("utf-8") + raw
+                message = BytesParser(policy=email_policy).parsebytes(envelope)
+                parts = message.get_payload() if message.is_multipart() else []
+                for part in parts:
+                    candidate = part.get_payload(decode=True)
+                    if candidate and (part.get_param("name", header="content-disposition") == "fileInput" or candidate.startswith(b"%PDF")):
+                        data = candidate
+                        break
+            except Exception as e:
+                raise ValueError(f"multipart 文件解析失败: {e}")
         try:
-            payload = json.loads(self._read_body().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001
-            self._send_json(400, {"error": f"请求体解析失败: {e}"})
-            return
-        keys = payload.get("keys") or []
-        if not isinstance(keys, list):
-            self._send_json(400, {"error": "keys 必须是数组"})
-            return
-        n = _cache_delete([str(k) for k in keys if k])
-        log.info("cache/delete: deleted=%d", n)
-        self._send_json(200, {"ok": True, "deleted": n})
-
-    def _handle_pdf2docx(self):
-        if not PDF2DOCX_OK:
-            self._send_json(500, {"error": "pdf2docx-plus 未安装：pip install pdf2docx-plus"})
-            return
-        job = self._job_id_from_path(self.path) or uuid.uuid4().hex
-        cache_key = self._query_param(self.path, "cache")
-        data = self._read_body()
-
-        # 缓存命中：同一 PDF（内容 hash 相同）直接返回上次转换的 docx，不重新转换
-        cached_path = _cache_path(cache_key) if cache_key else None
-        if cached_path and os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
+            doc = fitz.open(stream=data, filetype="pdf")
             try:
-                with open(cached_path, "rb") as f:
-                    out = f.read()
-                log.info("pdf2docx: CACHE HIT %s -> %d bytes", cache_key, len(out))
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                self.send_header("Content-Length", str(len(out)))
-                self.send_header("X-NF-Cache-Hit", "1")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(out)
-                return
-            except Exception as e:  # noqa: BLE001
-                log.warning("缓存读取失败，重新转换: %s", e)
-
-        with tempfile.TemporaryDirectory(prefix="nf-pdf2docx-") as td:
-            pdf_path = os.path.join(td, "input.pdf")
-            docx_path = os.path.join(td, "output.docx")
-            with open(pdf_path, "wb") as f:
-                f.write(data)
-            timeout_s = _PDF2DOCX_TIMEOUT_S
-            worker_err = os.path.join(
-                os.path.dirname(_WORKER_PY), "..", "logs", "convert-worker.err.log"
-            )
-            os.makedirs(os.path.dirname(worker_err), exist_ok=True)
-            progress_file = _progress_path(job)
-            _write_progress(job, {"percent": 1, "stage": "准备转换…", "done": 0, "total": 0})
-            try:
-                with open(worker_err, "ab") as errf:
-                    proc = subprocess.Popen(
-                        [sys.executable, _WORKER_PY, pdf_path, docx_path,
-                         "1" if _RECOVER_MISSING_IMAGES else "0",
-                         "1" if _RASTERIZE_VECTORS else "0",
-                         progress_file],
-                        stdout=subprocess.DEVNULL,
-                        stderr=errf,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        cwd=os.path.dirname(_WORKER_PY),
-                    )
-                    try:
-                        rc = proc.wait(timeout=timeout_s)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            proc.kill()
-                            proc.wait(timeout=10)
-                        except Exception:  # noqa: BLE001
-                            pass
-                        raise RuntimeError(f"转换超时（>{int(timeout_s)}s），已终止。文件可能过大或结构异常，请重试")
-                if rc != 0 or not os.path.exists(docx_path) or os.path.getsize(docx_path) == 0:
-                    raise RuntimeError(f"pdf2docx 转换失败（退出码 {rc}）")
-                with open(docx_path, "rb") as f:
-                    out = f.read()
+                doc.bake(annots=True, widgets=True)
+                out = doc.tobytes(garbage=4, deflate=True)
             finally:
-                _cleanup_progress(job)
-            # 转换成功 → 写入缓存（下次同文件直接复用；写失败不影响本次返回）
-            if cached_path:
-                try:
-                    os.makedirs(_CACHE_DIR, exist_ok=True)
-                    with open(cached_path, "wb") as f:
-                        f.write(out)
-                    log.info("pdf2docx: cache written %s (%d bytes)", cache_key, len(out))
-                except Exception as e:  # noqa: BLE001
-                    log.warning("缓存写入失败: %s", e)
-        log.info("pdf2docx: %d -> %d bytes", len(data), len(out))
-        self._send_bytes(200, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", out)
+                doc.close()
+        except Exception as e:
+            self._send_json(400, {"error": f"PDF 扁平化失败: {str(e)[:500]}"})
+            return
+        log.info("stirling-local flatten: %d -> %d bytes", len(data), len(out))
+        self._send_bytes(200, "application/pdf", out)
 
     def _handle_docx2pdf(self):
         if not DOCX2PDF_OK:
@@ -667,13 +518,13 @@ def _word_available():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="PDF<->DOCX 本地转换服务")
+    ap = argparse.ArgumentParser(description="本地文档转换服务")
     ap.add_argument("--port", type=int, default=5198)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
     _sweep_stale_progress()
-    log.info("pdf2docx-plus=%s docx2pdf=%s openpyxl=%s win32=%s word=%s",
-             PDF2DOCX_VER, DOCX2PDF_VER, OPENPYXL_VER, WIN32_OK, _word_available())
+    log.info("docx2pdf=%s openpyxl=%s win32=%s word=%s",
+             DOCX2PDF_VER, OPENPYXL_VER, WIN32_OK, _word_available())
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     log.info("转换服务已启动: http://%s:%d  (Ctrl+C 停止)", args.host, args.port)
     try:

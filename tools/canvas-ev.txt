@@ -1,0 +1,18 @@
+(function(){
+  var page = Array.prototype.slice.call(document.querySelectorAll('.pdf-page')).find(function(x){ return x.dataset.page === '1' });
+  if (!page) return null;
+  var out = [];
+  var canvases = page.querySelectorAll('canvas');
+  for (var i = 0; i < canvases.length; i++) {
+    var c = canvases[i];
+    var r = c.getBoundingClientRect();
+    out.push({ cls: c.className, attrW: c.width, attrH: c.height, cssW: r.width, cssH: r.height, left: r.left, top: r.top });
+  }
+  var layer = page.querySelector('.pdf-text-layer');
+  var lr = layer ? layer.getBoundingClientRect() : null;
+  out.push({ cls: 'text-layer', cssW: lr ? lr.width : 0, cssH: lr ? lr.height : 0, left: lr ? lr.left : 0, top: lr ? lr.top : 0 });
+  var container = page.querySelector('.pdf-canvas-container');
+  var cr = container ? container.getBoundingClientRect() : null;
+  out.push({ cls: 'container', cssW: cr ? cr.width : 0, cssH: cr ? cr.height : 0, left: cr ? cr.left : 0, top: cr ? cr.top : 0 });
+  return out;
+})()

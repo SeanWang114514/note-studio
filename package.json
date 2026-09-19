@@ -1,13 +1,17 @@
 {
   "name": "note-studio-mvp",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.9",
   "description": "本地文档转换与 PDF 编辑工具",
   "author": "Note Studio Contributors",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite",
+    "dev": "node tools/start-stirling.mjs && vite --host 127.0.0.1 --port 5199",
+    "stirling:start": "node tools/start-stirling.mjs",
+    "stirling:stop": "node tools/start-stirling.mjs --stop",
+    "stirling:status": "node tools/start-stirling.mjs --status",
+    "dev:plain": "vite --host 127.0.0.1 --port 5199",
     "build": "vite build",
     "preview": "vite preview",
     "convert": "python server/convert_server.py --port 5198",
@@ -19,7 +23,6 @@
   "dependencies": {
     "@capacitor/android": "^7.4.3",
     "@capacitor/core": "^7.4.3",
-    "@paddleocr/paddleocr-js": "^0.4.2",
     "docx": "^9.7.1",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.8.0",
@@ -28,7 +31,6 @@
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vosk-browser": "^0.0.8",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -44,16 +46,36 @@
     "directories": {
       "output": "release"
     },
+    "compression": "store",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!**/node_modules/**/*",
+      "!dist/dart-pdf-editor.staging/**/*",
+      "!dist/open-pdf-studio/**/*",
+      "!**/*.symbols",
+      "!dist/*.pdf",
+      "!dist/*.docx",
+      "!dist/*.epub",
+      "!dist/*.xlsx",
+      "!dist/*.md"
     ],
     "win": {
       "target": [
         "portable"
       ],
-      "artifactName": "Note-Studio-${version}-Windows.exe"
+      "artifactName": "Note-Studio-${version}-Windows.exe",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "requestExecutionLevel": "user",
+      "unpackDirName": false,
+      "useZip": true
     }
   }
 }

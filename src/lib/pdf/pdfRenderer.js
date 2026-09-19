@@ -10,8 +10,18 @@
 import { TextLayer } from 'pdfjs-dist'
 import { pdfjsLib } from './pdfEngine.js'
 
-export function getCanvasDPR() {
-  return window.devicePixelRatio || 1
+// 单页位图像素上限：HiDPI（Windows 150%/200% 缩放）= dpr2，再叠加高倍缩放时，
+// 一页后备缓冲可轻松超过 1500 万像素，滚动/翻页时每页栅格化都会卡住主线程。
+// 超过上限就按比例降低有效 dpr（画质略软，但滚动/书写不再掉帧）；正常 100%~150% 缩放不受影响。
+const MAX_PAGE_PIXELS = 6e6
+
+export function getCanvasDPR(logicalWidth, logicalHeight) {
+  const dpr = window.devicePixelRatio || 1
+  const area = Number(logicalWidth) * Number(logicalHeight)
+  if (!Number.isFinite(area) || area <= 0) return dpr
+  const cap = Math.sqrt(MAX_PAGE_PIXELS / area)
+  // 不低于 1：低于 1 会让 PDF 位图明显发虚
+  return Math.max(1, Math.min(dpr, cap))
 }
 
 /**
@@ -21,11 +31,12 @@ export function getCanvasDPR() {
  * @param {number} height - 逻辑高度（CSS px）
  */
 export function setupCanvasHiDPI(canvas, width, height) {
-  const dpr = getCanvasDPR()
+  const dpr = getCanvasDPR(width, height)
   canvas.width = Math.floor(width * dpr)
   canvas.height = Math.floor(height * dpr)
   canvas.style.width = Math.floor(width) + 'px'
   canvas.style.height = Math.floor(height) + 'px'
+  return dpr
 }
 
 /**
@@ -43,9 +54,10 @@ export function setupCanvasHiDPI(canvas, width, height) {
 export async function startPageRender(pdf, pageNum, canvas, scale) {
   const page = await pdf.getPage(pageNum)
   const viewport = page.getViewport({ scale })
-  setupCanvasHiDPI(canvas, viewport.width, viewport.height)
+  // setupCanvasHiDPI 返回「本页实际使用的 dpr」——高倍缩放时会被像素上限压低，
+  // render 的 transform 必须跟着它，否则位图与 CSS 尺寸不匹配（画面错位/发虚）。
+  const dpr = setupCanvasHiDPI(canvas, viewport.width, viewport.height)
   const ctx = canvas.getContext('2d')
-  const dpr = getCanvasDPR()
   // 单位变换 + transform 参数携带 dpr（官方 OutputScale 方案）
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.fillStyle = '#ffffff'
@@ -203,6 +215,14 @@ export async function renderTextLayer(page, viewport, container, pageNum, onSpan
       div.dataset.pdfActualFontName = fi?.name || ''
       div.dataset.pdfBold = String(!!fi?.bold)
       div.dataset.pdfItalic = String(!!fi?.italic)
+      // 文字颜色（pdf.js TextItem.color，RGB [r,g,b] 0-1）
+      if (item?.color) {
+        const [r, g, b] = item.color
+        if (r !== undefined && g !== undefined && b !== undefined) {
+          const toHex = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')
+          div.dataset.pdfColor = '#' + toHex(r) + toHex(g) + toHex(b)
+        }
+      }
     }
     onSpanReady?.(div, idx, texts[idx])
   })

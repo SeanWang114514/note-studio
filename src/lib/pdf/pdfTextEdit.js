@@ -105,6 +105,11 @@ export function blockBoundsInLayer(spans) {
  * @returns {Array<{spans: HTMLElement[], lines: Array<{text: string, spans: HTMLElement[], pdfX: number, pdfY: number, pdfWidth: number, fontSize: number}>, lineSpacing: number, rect: {left, top, width, height}, fontSize: number, fontFamily: string, color: string, isBold: boolean, isItalic: boolean}>}
  */
 export function collectParagraphs(textLayer, pageNum) {
+  return collectParagraphsImpl(textLayer, pageNum)
+}
+
+/** 页内 span → 行 的底层聚合（按 pdfY 分组 + 列拆分），供 collectLines / collectParagraphs 共用 */
+function buildPageLines(textLayer, pageNum) {
   if (!textLayer) return []
   const spans = Array.from(textLayer.querySelectorAll('span[data-page]')).filter(
     (s) =>
@@ -132,6 +137,7 @@ export function collectParagraphs(textLayer, pageNum) {
       }
     })
     .filter(Boolean)
+  if (items.length === 0) return []
 
   // 按 pdfY 降序（阅读顺序：上→下），同 Y 按 pdfX 升序
   items.sort((a, b) => b.pdfY - a.pdfY || a.pdfX - b.pdfX)
@@ -168,6 +174,52 @@ export function collectParagraphs(textLayer, pageNum) {
     }
     splitLines.push(segment)
   }
+  return splitLines
+}
+
+/**
+ * 页级逐行聚合：返回整页自上而下的「行」数组（跨段落连续编辑表面用）。
+ * 每行携带 text/spans/spanFormats/dom 几何/span 索引（lineIdx）。
+ */
+export function collectLines(textLayer, pageNum) {
+  const splitLines = buildPageLines(textLayer, pageNum)
+  if (!splitLines.length) return []
+  return splitLines.map((lineItems) => {
+    const first = lineItems[0]
+    const spanFormats = lineItems.map((it) => {
+      const s = it.span
+      return {
+        text: s.textContent || '',
+        color: s.dataset.pdfColor || sampleTextColor(s) || '#1f1f1f',
+        bold: s.dataset.pdfBold === 'true',
+        italic: s.dataset.pdfItalic === 'true',
+        fontSize: it.fontSize,
+        pdfX: it.pdfX,
+        pdfWidth: it.pdfWidth,
+      }
+    })
+    return {
+      text: lineItems.map((it) => it.span.textContent || '').join(''),
+      spans: lineItems.map((it) => it.span),
+      spanFormats,
+      pdfX: first.pdfX,
+      pdfY: first.pdfY,
+      pdfWidth: lineItems.reduce((s, it) => s + it.pdfWidth, 0),
+      fontSize: first.fontSize,
+      domTop: Math.min(...lineItems.map((it) => it.domTop)),
+      domBottom: Math.max(...lineItems.map((it) => it.domBottom)),
+      domLeft: Math.min(...lineItems.map((it) => it.domLeft)),
+      domRight: Math.max(...lineItems.map((it) => it.domRight)),
+      lineIdx: lineItems
+        .map((it) => Number(it.span.dataset?.idx))
+        .filter((v) => Number.isFinite(v)),
+    }
+  })
+}
+
+function collectParagraphsImpl(textLayer, pageNum) {
+  const splitLines = buildPageLines(textLayer, pageNum)
+  if (!splitLines.length) return []
 
   // ── Step 2: 行 → 段落 ──
   const blocks = []
@@ -200,13 +252,33 @@ export function collectParagraphs(textLayer, pageNum) {
   // ── 构建段落对象 ──
   return blocks.map((block) => {
     const allItems = block.flat()
+    // 给每个 span 标记所在行索引（0-based），供 openEditor 从 DOM 逐行重建 spanFormats
+    block.forEach((lineItems, lineIdx) => {
+      lineItems.forEach((it) => {
+        it.span.dataset.lineIdx = String(lineIdx)
+      })
+    })
     const allSpans = allItems.map((it) => it.span)
 
     const lineData = block.map((lineItems) => {
       const first = lineItems[0]
+      // per-span 格式数据（颜色、粗体、斜体）
+      const spanFormats = lineItems.map((it) => {
+        const s = it.span
+        return {
+          text: s.textContent || '',
+          color: s.dataset.pdfColor || sampleTextColor(s) || '#1f1f1f',
+          bold: s.dataset.pdfBold === 'true',
+          italic: s.dataset.pdfItalic === 'true',
+          fontSize: it.fontSize,
+          pdfX: it.pdfX,
+          pdfWidth: it.pdfWidth,
+        }
+      })
       return {
         text: lineItems.map((it) => it.span.textContent || '').join(''),
         spans: lineItems.map((it) => it.span),
+        spanFormats,
         pdfX: first.pdfX,
         pdfY: first.pdfY,
         pdfWidth: lineItems.reduce((s, it) => s + it.pdfWidth, 0),
@@ -248,8 +320,50 @@ export function collectParagraphs(textLayer, pageNum) {
   })
 }
 
-/** 从 span 的 canvas 上采样文字颜色（span 中心像素） */
-function sampleTextColor(span) {
+/** 从 canvas 上采样文字颜色（多点采样） */
+export function sampleColorFromSpan(span) {
+  return sampleTextColor(span)
+}
+
+/** 从 canvas 上采样 span 背景色（高亮/底色） */
+export function sampleBgColorFromSpan(span) {
+  try {
+    const layer = span.closest('.pdf-text-layer')
+    const canvas = layer?.parentElement?.querySelector('.pdf-canvas')
+    if (!canvas || !canvas.getContext) return null
+    const ctx = canvas.getContext('2d')
+    const r = span.getBoundingClientRect()
+    const cr = canvas.getBoundingClientRect()
+    if (!r.width || !cr.width) return null
+    const sx = (px) => Math.min(canvas.width - 2, Math.max(1, ((px - cr.left) / cr.width) * canvas.width))
+    const sy = (py) => Math.min(canvas.height - 2, Math.max(1, ((py - cr.top) / cr.height) * canvas.height))
+    // 在 span 边缘采样（底部常见高亮）
+    let best = null
+    const sample = (px, py) => {
+      const d = ctx.getImageData(Math.floor(sx(px)), Math.floor(sy(py)), 1, 1).data
+      if (d[3] < 60) return
+      const lum = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]
+      const hex = ((1 << 24) + (d[0] << 16) + (d[1] << 8) + d[2]).toString(16).slice(1)
+      // 高亮：非白非黑
+      if (lum < 235 && lum > 30) {
+        if (!best || Math.abs(lum - 180) > Math.abs(best.lum - 180)) best = { lum, hex }
+      }
+    }
+    // 采样 span 底部几行（高亮通常在字下方）
+    for (let i = 0; i < 5; i++) {
+      const py = r.top + r.height * (0.75 + i * 0.05)
+      for (let gx = 0; gx < 5; gx++) {
+        const px = r.left + r.width * (gx + 0.5) / 5
+        sample(px, py)
+      }
+    }
+    if (best) return '#' + best.hex
+    return null
+  } catch { return null }
+}
+
+/** 从 span 的 canvas 上采样文字颜色：整块区域找最暗像素（精确命中笔画核心） */
+export function sampleTextColor(span) {
   try {
     const layer = span.closest('.pdf-text-layer')
     const canvas = layer?.parentElement?.querySelector('.pdf-canvas')
@@ -258,50 +372,75 @@ function sampleTextColor(span) {
     const r = span.getBoundingClientRect()
     const cr = canvas.getBoundingClientRect()
     if (!r.width || !cr.width) return '#1f1f1f'
-    const sx = (px) =>
-      Math.min(canvas.width - 2, Math.max(1, ((px - cr.left) / cr.width) * canvas.width))
-    const sy = (py) =>
-      Math.min(canvas.height - 2, Math.max(1, ((py - cr.top) / cr.height) * canvas.height))
-
-    // 在 span 区域内采样多点（3×3 网格 + 垂直中线），取「非白中最暗」的颜色。
-    // 只采中心一点会落在文字间隙/白色背景上 → 误判为白色 → 编辑框文字不可见。
+    const sx0 = Math.max(0, Math.floor(((r.left - cr.left) / cr.width) * canvas.width) - 1)
+    const sy0 = Math.max(0, Math.floor(((r.top - cr.top) / cr.height) * canvas.height) - 1)
+    const sw = Math.min(canvas.width - sx0, Math.ceil((r.width / cr.width) * canvas.width) + 2)
+    const sh = Math.min(canvas.height - sy0, Math.ceil((r.height / cr.height) * canvas.height) + 2)
+    if (sw <= 0 || sh <= 0) return '#1f1f1f'
+    const d = ctx.getImageData(sx0, sy0, sw, sh).data
     let best = null // { lum, hex }
-    const sample = (px, py) => {
-      const d = ctx.getImageData(Math.floor(sx(px)), Math.floor(sy(py)), 1, 1).data
-      if (d[3] < 60) return // 透明像素跳过
-      // 亮度：接近白色的像素跳过（背景）
-      const lum = 0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]
-      if (lum > 235) return
-      const hex = ((1 << 24) + (d[0] << 16) + (d[1] << 8) + d[2]).toString(16).slice(1)
-      if (!best || lum < best.lum) best = { lum, hex }
-    }
-
-    // 3×3 网格
-    for (let gy = 0; gy < 3; gy++) {
-      for (let gx = 0; gx < 3; gx++) {
-        const px = r.left + (r.width * (gx + 0.5)) / 3
-        const py = r.top + (r.height * (gy + 0.5)) / 3
-        sample(px, py)
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 60) continue
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+      if (lum > 235) continue // 背景白跳过
+      if (!best || lum < best.lum) {
+        const hex = ((1 << 24) + (d[i] << 16) + (d[i + 1] << 8) + d[i + 2]).toString(16).slice(1)
+        best = { lum, hex }
+        if (lum < 25) break // 已接近纯黑，提前结束
       }
     }
-    // 垂直中线多点（密集采样提高命中文字笔画的概率）
-    for (let i = 0; i < 7; i++) {
-      sample(r.left + r.width / 2, r.top + (r.height * (i + 0.5)) / 7)
-    }
-    // 水平中线多点
-    for (let i = 0; i < 7; i++) {
-      sample(r.left + (r.width * (i + 0.5)) / 7, r.top + r.height / 2)
-    }
-
     return best ? '#' + best.hex : '#1f1f1f'
   } catch {
     return '#1f1f1f'
   }
 }
 
+/** 行内多个 span 取最暗颜色（以文字笔画核心为准） */
+export function sampleLineTextColor(spans) {
+  let best = null // { lum, hex }
+  for (const s of spans || []) {
+    const hex = sampleTextColor(s)
+    const m = /^#([0-9a-f]{6})$/i.exec(hex || '')
+    if (!m) continue
+    const v = parseInt(m[1], 16)
+    const lum = 0.299 * ((v >> 16) & 255) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)
+    if (!best || lum < best.lum) best = { lum, hex }
+    if (best.lum < 25) break
+  }
+  return best ? best.hex : '#1f1f1f'
+}
+
+/** 挑选行内最能代表该行样式的 span（CJK 优先，其次最长文本） */
+export function pickStyleSpan(spans) {
+  let best = null
+  let bestScore = -1
+  for (const s of spans || []) {
+    const t = s.textContent || ''
+    const cjk = (t.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length
+    const score = cjk * 10 + t.length
+    if (score > bestScore) {
+      bestScore = score
+      best = s
+    }
+  }
+  return best || (spans && spans[0]) || null
+}
+
 /** PDF 字体名 → CSS 字体族（用于编辑器与合成 span 的视觉还原） */
+function recoverUtf8Name(name) {
+  const s = String(name || '')
+  try {
+    if (!/[\u0080-\u00ff]{2,}/.test(s)) return s
+    const bytes = Uint8Array.from(s, (c) => c.charCodeAt(0) & 0xff)
+    const dec = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return dec || s
+  } catch {
+    return s
+  }
+}
+
 export function cssFamilyFor(actualFontName, pdfFontFamily) {
-  const an = (actualFontName || '').toLowerCase()
+  const an = recoverUtf8Name(actualFontName).toLowerCase()
   const ff = (pdfFontFamily || '').toLowerCase()
 
   // 中文常见字体（PDF 内嵌宋体/黑体/楷体/仿宋/雅黑 → 本地同名字体）

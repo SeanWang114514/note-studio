@@ -1,0 +1,24 @@
+(() => {
+ const layers = [...document.querySelectorAll('.pdf-text-layer')];
+ const hits = [];
+ for (const layer of layers) {
+   const spans = [...layer.querySelectorAll('span[data-page]')];
+   for (const s of spans) {
+     const t = s.textContent || '';
+     if ((t.includes('填写') || t.includes('相应内容') || t.includes('5.')) && t.length < 40) {
+       const tf = JSON.parse(s.dataset.pdfTransform || '[]');
+       hits.push({
+         text: t,
+         bold: s.dataset.pdfBold,
+         italic: s.dataset.pdfItalic,
+         actualFont: s.dataset.pdfActualFontName,
+         fontFamily: s.dataset.pdfFontFamily,
+         pdfWidth: s.dataset.pdfWidth,
+         transform: tf,
+         fontSize: tf.length >= 4 ? (Math.sqrt(tf[0]*tf[0]+tf[1]*tf[1])).toFixed(2) : '?'
+       });
+     }
+   }
+ }
+ return { count: hits.length, hits };
+})()
