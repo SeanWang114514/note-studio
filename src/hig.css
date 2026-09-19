@@ -425,12 +425,29 @@ input[type='radio'] {
   width: max-content;
   max-width: min(96vw, 1200px);
   min-height: 0;
-  padding: 7px 10px;
+  padding: 8px 11px;
   gap: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--material-toolbar);
   box-shadow: var(--shadow-md);
+}
+
+/* 工具栏图标放大一档：图标 16→19px，按钮盒 28→32px（图标约占 59%，与 HIG 的
+   图标/触控目标比例一致）。只写在 ≥761px 这一档 —— 窄屏那条媒体查询要求
+   「触控目标 40pt 方形」，这里的 32px 会把那个目标压小，所以两边不要打架。 */
+@media (min-width: 761px) {
+  .doc-toolbar .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* 栏内的说明文字（「N 条批注」、缩放百分比）也长一档：12px 的字配 19px 的图标
+   会显得又小又空。只覆盖工具栏里这两处，不动 --text-caption1 这个全局令牌。 */
+.doc-toolbar .toolbar-hint,
+.doc-toolbar .zoom-value {
+  font-size: var(--text-footnote);
 }
 
 /* 拖动中：抬起来 + 抓手光标，让「正在搬这条工具栏」一目了然。

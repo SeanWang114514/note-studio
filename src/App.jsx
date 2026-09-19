@@ -1150,7 +1150,7 @@ function ToolButton({ active, title, icon: Icon, color, onClick, onDoubleClick, 
       }
       disabled={disabled}
     >
-      <Icon size={16} style={color ? { color } : undefined} />
+      <Icon size={19} style={color ? { color } : undefined} />
       {/* 有设置的工具有个小角标，提示「再点一次/双击/右键」可打开设置 */}
       {hasSettings && <span className="tool-settings-dot" aria-hidden="true" />}
     </button>
@@ -4349,7 +4349,7 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
         aria-label="拖动工具栏"
         onPointerDown={startToolbarDrag}
       >
-        {isVert ? <GripVertical size={15} /> : <GripHorizontal size={15} />}
+        {isVert ? <GripVertical size={18} /> : <GripHorizontal size={18} />}
       </button>
       <div className="tool-group">
         <ToolButton
@@ -4446,11 +4446,11 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
       </span>
       <div className="tool-group zoom-group">
         <button className="icon-btn" title="缩小显示" onClick={() => setZoom((z) => Math.max(60, z - 10))}>
-          <ZoomOut size={16} />
+          <ZoomOut size={19} />
         </button>
         <span className="zoom-value">{zoom}%</span>
         <button className="icon-btn" title="放大显示" onClick={() => setZoom((z) => Math.min(200, z + 10))}>
-          <ZoomIn size={16} />
+          <ZoomIn size={19} />
         </button>
       </div>
       {/* 最下方（竖版）/ 最右侧（横版）的转换按钮：横版 ↔ 竖版互转。

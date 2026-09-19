@@ -1,7 +1,7 @@
 {
   "name": "note-studio-mvp",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "本地文档转换与 PDF 编辑工具",
   "author": "Note Studio Contributors",
   "type": "module",
