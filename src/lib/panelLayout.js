@@ -7,6 +7,7 @@
 // - 键盘/无障碍与 Apple HIG 分隔条一致：role="separator"、方向键微调、双击复位。
 
 import { useCallback, useSyncExternalStore } from 'react'
+import { isMobileShell } from './mobile.js'
 
 export const PANEL_DEFAULTS = {
   // 应用左侧边栏（源列表）
@@ -18,12 +19,16 @@ export const PANEL_DEFAULTS = {
   // 用户可从工具栏的「隐藏/显示缩略图栏」按钮随时打开（手机上折叠细栏本身是隐藏的）。
   pdfThumbs: { width: 136, min: 124, max: 300, collapsed: isNarrowViewport() },
   // 右侧批注栏（所有文档视图共用）
-  annPanel: { width: 268, min: 200, max: 520, collapsed: false },
+  // 手机（≤760px）默认折叠：412px 的屏上批注栏占 268px，文档区只剩 144px ——
+  // 页面既装不下也看不清，「按屏幕自动适配」无从谈起。用户点折叠条上的按钮随时能展开。
+  annPanel: { width: 268, min: 200, max: 520, collapsed: isNarrowViewport() },
 }
 
 // 模块加载时的视口宽度决定「首次打开」的默认布局（仅在没有用户已保存偏好的时候生效）
 function isNarrowViewport() {
-  return typeof window !== 'undefined' && window.innerWidth <= 760
+  if (typeof window === 'undefined') return false
+  // 原生 APK 一律按窄屏处理：横屏时 innerWidth 可能 900+，但仍是触屏手机/平板
+  return isMobileShell() || window.innerWidth <= 760
 }
 
 const STORAGE_KEY = 'note-studio.panel-layout.v1'

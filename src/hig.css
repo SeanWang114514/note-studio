@@ -413,6 +413,120 @@ input[type='radio'] {
   color: var(--text-secondary);
 }
 
+/* ── 悬浮工具栏：可拖动 / 磁吸四边 / 横竖互换 ──────────────────────
+   工具栏脱离文档流（position: fixed），坐标由 AnnotToolbar 按「编辑区四边」算好内联给出；
+   停靠时 AnnotToolbar 会给编辑区补内边距让位，所以它不会压住 .pdf-toolbar 或正文第一行。
+   z-index 35：高过文档内容（批注画布 / 缩略图栏），但低于弹层遮罩 40 与弹层 50 ——
+   打开设置面板时工具栏和整页一起被压暗，弹层永远在最上面。 */
+.doc-toolbar.is-float {
+  position: fixed;
+  z-index: 35;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: min(96vw, 1200px);
+  min-height: 0;
+  padding: 7px 10px;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--material-toolbar);
+  box-shadow: var(--shadow-md);
+}
+
+/* 拖动中：抬起来 + 抓手光标，让「正在搬这条工具栏」一目了然 */
+.doc-toolbar.is-float.is-dragging {
+  box-shadow: var(--shadow-lg);
+  cursor: grabbing;
+}
+
+/* 拖动中已经够到某条边：工具栏会先按「吸附后的样子」显示（含自动转竖/横版），
+   再描一圈强调色，让人松手前就知道会吸到哪里。 */
+.doc-toolbar.is-float.is-snapping {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 横版这一条自己不滚动，整块交给拖动手势；竖版可能滚（窗口矮时），保留纵向平移 */
+.doc-toolbar.is-float.is-horizontal {
+  touch-action: none;
+}
+
+.doc-toolbar.is-float.is-vertical {
+  touch-action: pan-y;
+}
+
+.toolbar-drag-handle {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 30px;
+  color: var(--text-secondary);
+  cursor: grab;
+  opacity: 0.7;
+  touch-action: none;
+}
+
+.toolbar-drag-handle:hover {
+  opacity: 1;
+}
+
+.doc-toolbar.is-float.is-dragging .toolbar-drag-handle {
+  cursor: grabbing;
+  opacity: 1;
+}
+
+/* 竖版：整条工具栏转成一列，分组也跟着转成列（左右停靠时自动生效，也可手动切换） */
+.doc-toolbar.is-vertical {
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  max-width: none;
+  max-height: min(94vh, 100%);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.doc-toolbar.is-vertical .tool-group {
+  flex-direction: column;
+  align-items: center;
+}
+
+.doc-toolbar.is-vertical .tool-group + .tool-group {
+  margin-left: 0;
+  padding-left: 2px;
+  padding-top: 6px;
+  border-left: none;
+  /* 分组之间的分隔线从「竖线」转成「横线」，竖版里才读得懂分组关系 */
+  border-top: 1px solid var(--border);
+}
+
+/* 竖版收起文字标签，只留图标（与窄屏媒体查询同一约定：说明交给 title） */
+.doc-toolbar.is-vertical .btn-text,
+.doc-toolbar.is-vertical .toolbar-hint {
+  display: none;
+}
+
+.doc-toolbar.is-vertical .tool-btn {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+
+.doc-toolbar.is-vertical .toolbar-drag-handle {
+  width: 30px;
+  height: 22px;
+}
+
+/* 竖版里缩放组横向排一行太宽，三行竖排更贴合整条竖栏 */
+.doc-toolbar.is-vertical .zoom-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-toolbar.is-vertical .zoom-value {
+  font-size: var(--text-caption2);
+}
+
 .tool-btn {
   height: 26px;
   padding: 0 8px;
@@ -718,6 +832,44 @@ input[type='radio'] {
 
 .pop-label {
   margin-bottom: 8px;
+}
+
+/* 设置弹层的拖动条：按住可把面板拖到任意位置自由悬浮（竖版工具条贴边时尤其有用，
+   否则弹层只能长在按钮旁边，一挡就是半页文档）。面板 portal 到 body 且 position: fixed，
+   拖过之后坐标由 Popover 自己接管，不再跟随按钮锚点。 */
+.pop-drag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 12px;
+  margin: -5px -4px 9px;
+  border-radius: var(--radius-xs);
+  cursor: grab;
+  touch-action: none;
+}
+
+.pop-drag:hover {
+  background: var(--fill-quaternary);
+}
+
+.pop-drag:active {
+  cursor: grabbing;
+}
+
+.pop-drag-grip {
+  width: 26px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--fill-secondary);
+}
+
+.pop-drag:hover .pop-drag-grip {
+  background: var(--text-muted);
+}
+
+/* 被拖走之后投影更重一点：提示「这个面板已经脱离按钮，是独立悬浮的」 */
+.pen-popover.is-floating {
+  box-shadow: var(--shadow-lg);
 }
 
 /* 选中项的图标跟随文字颜色（避免出现「灰图标 + 白文字」这种半隐形状态） */

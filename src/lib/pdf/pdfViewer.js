@@ -72,13 +72,21 @@ export class PdfViewer {
   getScrollWidth() {
     const el = this.opts.scrollEl
     if (!el) return 800
-    // 减去 padding：页面容器自带 padding，用 clientWidth 更稳妥
-    return Math.max(200, el.clientWidth - 32)
+    // 容器还没布局（0 宽）时返回 0：交给调用方跳过这次 fit。
+    // 以前这里钳到最小 200px —— 手机上文档区常常只有 100 多像素，于是「适合宽度」
+    // 是按 200px 算出来的，页面比屏幕宽、右边被切掉。下限必须足够小。
+    const w = el.clientWidth
+    if (!(w > 0)) return 0
+    // 减去页面容器自带的 padding
+    return Math.max(48, w - 32)
   }
 
   getScrollHeight() {
     const el = this.opts.scrollEl
-    return el ? Math.max(200, el.clientHeight - 32) : 600
+    if (!el) return 600
+    const h = el.clientHeight
+    if (!(h > 0)) return 0
+    return Math.max(48, h - 32)
   }
 
   async ensureBaseDims(pageNum) {
@@ -158,24 +166,26 @@ export class PdfViewer {
   fitWidth() {
     const pdf = this.opts.getPdf()
     if (!pdf) return
+    const avail = this.getScrollWidth()
+    if (!avail) return // 容器还没布局，等下一次（fitWhenReady / ResizeObserver）再算
     // 以「当前所在页」为基准：不同尺寸的页面混排时，跟随你正在看的那一页更合理
     const firstPage = this.currentPage || 1
     const d = this.baseDims.get(firstPage)
     if (!d) return
-    const newScale = Math.min(ZOOM_MAX, (this.getScrollWidth() / d.widthPt) * 0.98)
+    const newScale = Math.min(ZOOM_MAX, (avail / d.widthPt) * 0.98)
     this.fitMode = FIT_WIDTH
     this._setFitScale(newScale)
   }
   fitPage() {
     const pdf = this.opts.getPdf()
     if (!pdf) return
+    const availW = this.getScrollWidth()
+    const availH = this.getScrollHeight()
+    if (!availW || !availH) return
     const firstPage = this.currentPage || 1
     const d = this.baseDims.get(firstPage)
     if (!d) return
-    const s = Math.min(
-      this.getScrollWidth() / d.widthPt,
-      this.getScrollHeight() / d.heightPt,
-    )
+    const s = Math.min(availW / d.widthPt, availH / d.heightPt)
     this.fitMode = FIT_PAGE
     this._setFitScale(Math.min(ZOOM_MAX, s * 0.98))
   }
@@ -589,6 +599,9 @@ export class PdfViewer {
    * 等待容器宽度稳定后执行 fit（mount 时容器可能尚未布局完成，
    * fitWidth 用 0 宽度算出极小/极大 scale 导致页面超宽被截断）。
    * 最多等待数帧，宽度稳定后立即 fit。
+   *
+   * 另外还要等页面基准尺寸（baseDims，异步取的）：没好就 fit 的话 fitWidth 会直接 return，
+   * fitMode 也不会被设上 —— 手机上打开文档就停在 100%，页面比屏幕宽，只能左右拖。
    */
   fitWhenReady(attempts = 0) {
     if (this.destroyed) return
@@ -603,7 +616,9 @@ export class PdfViewer {
         this.fitWidth()
       }
     }
-    if ((w > 0 && attempts > 0) || attempts >= 10) {
+    const dimsReady = Boolean(this.baseDims.get(this.currentPage || 1))
+    const laidOut = (w > 0 && attempts > 0) || attempts >= 10
+    if (laidOut && (dimsReady || attempts >= 40)) {
       initialFit()
       this.renderVisible()
       return

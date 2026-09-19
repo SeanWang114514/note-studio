@@ -4445,3 +4445,30 @@ button:disabled {
   background: var(--bg-active);
   color: var(--accent);
 }
+
+/* ── 移动端（APK / 触屏窄屏）触控手感 ──────────────────────────────
+   标记由 lib/mobile.js 写到 <html data-mobile="1">，只在这种环境下生效：
+   - 文档滚动容器的手势交给我们自己处理（pointermove 里搬 scrollTop + 松手惯性，
+     见 lib/momentumScroll.js）：这里明确关掉双指缩放与橡皮筋回弹，否则 WebView
+     自己的缩放会和惯性互相打架，手感就是「滑一下、页面又自己缩一下」。
+   - 点按不要出现灰色高亮块（原生 App 没有这个东西）。 */
+html[data-mobile='1'] .pdf-scroll,
+html[data-mobile='1'] .docx-scroll,
+html[data-mobile='1'] .document-view,
+html[data-mobile='1'] .office-scroll,
+html[data-mobile='1'] .ann-scroll {
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-mobile='1'] .annot-canvas {
+  touch-action: none;
+}
+
+html[data-mobile='1'] button,
+html[data-mobile='1'] .tool-btn,
+html[data-mobile='1'] .icon-btn,
+html[data-mobile='1'] .tab {
+  -webkit-tap-highlight-color: transparent;
+}

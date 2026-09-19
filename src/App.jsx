@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   ArrowDown,
@@ -19,11 +19,14 @@ import {
   FileSpreadsheet,
   FileText,
   FileWarning,
+  GripHorizontal,
+  GripVertical,
   Highlighter,
   Home,
   Italic,
   Merge,
   Circle,
+  Columns3,
   Eraser,
   Minus,
   Square,
@@ -37,6 +40,7 @@ import {
   Plus,
   Presentation,
   Redo2,
+  Rows3,
   Save,
   ScanText,
   Shapes,
@@ -91,6 +95,8 @@ import PdfEditorView from './components/PdfEditorView.jsx'
 import { PanelSplitter } from './components/PanelSplitter.jsx'
 import { usePanel } from './lib/panelLayout.js'
 import { makeSurfaceRescaleSettler, useSurfaceRescale } from './lib/surfaceRescale.js'
+import { isMobileShell, tagMobileShell } from './lib/mobile.js'
+import { createVelocityTracker, startMomentumScroll } from './lib/momentumScroll.js'
 import {
   DEFAULT_TEXT_STYLE,
   TEXT_ALIGNS,
@@ -2015,7 +2021,12 @@ function useAnnotTools({ annKey, entry, notify }) {
   const marqueeRef = useRef(null) // 框选会话：起点 / 是否加选 / 拖动前已选中的集合
   const moveGroupRef = useRef(null) // 整组拖动会话：ids + 起始点 + 起始快照
   const touchRef = useRef(new Map()) // 触摸中的 pointerId -> 最新位置
-  const panRef = useRef(null) // 双指滚动会话（画布是 touch-action:none，浏览器不会替我们滚）
+  const panRef = useRef(null) // 触摸滚动会话（画布是 touch-action:none，浏览器不会替我们滚）
+  // 松手后的惯性滚动：取消函数 + 速度采样器（移动端单指/双指都走这套）
+  const momentumRef = useRef(null)
+  const velocityRef = useRef(null)
+  if (!velocityRef.current) velocityRef.current = createVelocityTracker()
+  const isMobile = useRef(isMobileShell()).current
   const cancelEditRef = useRef(false)
   const saveTimer = useRef(null)
   const draftRef = useRef(null)
@@ -2608,6 +2619,104 @@ function useAnnotTools({ annKey, entry, notify }) {
       .finally(() => setSaving(false))
   }, [entry, notify])
 
+  // ── 触摸滚动：移动端单指滑动文档（带惯性）+ 双指滚动 ─────────────────────
+  // 画布是 touch-action:none（画笔必须），浏览器不会替我们滚，所以滚动由我们自己在
+  // pointermove 里搬 scrollTop；「惯性」由 momentumScroll.js 在松手后按速度继续搬。
+
+  /** 取消在途惯性（新手指按下时必须取消，否则会和手指抢 scrollTop） */
+  const stopMomentum = useCallback(() => {
+    if (momentumRef.current) {
+      momentumRef.current()
+      momentumRef.current = null
+    }
+  }, [])
+
+  // 卸载（换文档 / 关标签）时停掉惯性滚动，避免回调打到已卸载的容器上
+  useEffect(() => () => stopMomentum(), [stopMomentum])
+
+  /** 开始一次触摸滚动会话。x/y 是锚点：单指=手指位置，双指=两指中点 */
+  const beginPan = useCallback(
+    (scroller, e, x, y) => {
+      if (!scroller) return false
+      stopMomentum()
+      velocityRef.current.reset()
+      velocityRef.current.add(x, y, e.timeStamp || performance.now())
+      panRef.current = {
+        scroller,
+        startX: x,
+        startY: y,
+        top: scroller.scrollTop,
+        left: scroller.scrollLeft,
+        moved: false,
+        startedAt: performance.now(),
+        pointers: new Set([e.pointerId]),
+      }
+      return true
+    },
+    [stopMomentum],
+  )
+
+  /** 会话中手指数量变化（1↔2）：以当前锚点重新对齐，否则文档会跳一下 */
+  const reanchorPan = useCallback((pan, x, y) => {
+    pan.startX = x
+    pan.startY = y
+    pan.top = pan.scroller.scrollTop
+    pan.left = pan.scroller.scrollLeft
+    pan.moved = true // 已经动过了，之后的抬手不再算「轻点」
+    velocityRef.current.reset()
+    velocityRef.current.add(x, y)
+  }, [])
+
+  /** 指针位置 → 滚动锚点（单指用自身，双指用中点） */
+  const panAnchor = useCallback((pan) => {
+    const pts = [...touchRef.current.values()]
+    if (pan.pointers.size >= 2 && pts.length >= 2) {
+      return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, two: true }
+    }
+    const last = pts[pts.length - 1] || { x: pan.startX, y: pan.startY }
+    return { x: last.x, y: last.y, two: false }
+  }, [])
+
+  /**
+   * 触摸收尾（抬手 / 取消 / 移出）。fling=true 时按松手速度继续滑。
+   * @returns {boolean} 是否消费掉这次事件（有滚动会话在手）
+   */
+  const finishTouchPan = useCallback(
+    (e, opts = {}) => {
+      if (e?.pointerType !== 'touch') return false
+      touchRef.current.delete(e.pointerId)
+      const pan = panRef.current
+      if (!pan) return false
+      pan.pointers.delete(e.pointerId)
+      if (pan.pointers.size > 0) {
+        // 还有手指按着：锚点挪到剩下那根手指上，继续滚
+        const rest = [...touchRef.current.values()].pop()
+        if (rest) reanchorPan(pan, rest.x, rest.y)
+        return true
+      }
+      panRef.current = null
+      const isTap = !pan.moved && performance.now() - pan.startedAt < 350
+      if (isTap) {
+        // 触屏轻点空白：清空选择（触屏上单指拖动已经被「滑动文档」占用）
+        setSelectedIds(SEL_EMPTY)
+        setMarquee(null)
+        velocityRef.current.reset()
+        return true
+      }
+      if (opts.fling !== false) {
+        const { vx, vy } = velocityRef.current.velocity()
+        // 手指速度 → 滚动速度要取反：手指下移 = 内容向上走 = scrollTop 减小
+        momentumRef.current = startMomentumScroll(pan.scroller, -vx, -vy, {
+          onStop: () => {
+            momentumRef.current = null
+          },
+        })
+      }
+      return true
+    },
+    [reanchorPan],
+  )
+
   // 画布绘制（画笔、荧光笔 / 选择批注）
   const handleOverlayDown = useCallback(
     (e) => {
@@ -2631,9 +2740,23 @@ function useAnnotTools({ annKey, entry, notify }) {
         return
       }
       if (tool === 'select' || tool === 'selectAnnot') {
-        // 触摸：第二根手指进来 = 想滚动文档（单指仍然是框选）。
-        // 画布是 touch-action:none（画笔必须），浏览器不会替我们滚动，所以这里自己实现双指滚动，
-        // 否则手机上默认工具就是「选择」，手指怎么划都滚不动文档。
+        const point = getPoint(e)
+        const { docW, docH } = geomRef.current
+        // 先做命中测试：手指/指针落在批注上 → 选中并准备拖动（桌面和触屏一致）
+        const anns = annRef.current[annKey] || []
+        let hit = null
+        if (docW && docH) {
+          for (let i = anns.length - 1; i >= 0; i--) {
+            if (hitTestAnnotation(anns[i], point.x * docW, point.y * docH, docW, docH)) {
+              hit = anns[i]
+              break
+            }
+          }
+        }
+        // 触摸：
+        // - 第二根手指进来 = 想滚动文档（任何工具下都成立）
+        // - 移动端单指落在空白处 = 滑动文档（画布是 touch-action:none，浏览器不会替我们滚，
+        //   所以这里自己搬 scrollTop，松手交给 momentumScroll 做惯性）；桌面/触控笔保留框选。
         if (e.pointerType === 'touch') {
           touchRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
           if (touchRef.current.size >= 2) {
@@ -2642,28 +2765,20 @@ function useAnnotTools({ annKey, entry, notify }) {
             setMarquee(null)
             const scroller = scrollerRef.current || findScroller(overlayRef.current)
             const pts = [...touchRef.current.values()]
-            panRef.current = scroller && {
-              scroller,
-              startX: (pts[0].x + pts[1].x) / 2,
-              startY: (pts[0].y + pts[1].y) / 2,
-              top: scroller.scrollTop,
-              left: scroller.scrollLeft,
+            if (beginPan(scroller, e, (pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2)) {
+              panRef.current.pointers = new Set(touchRef.current.keys())
+              e.currentTarget.setPointerCapture(e.pointerId)
+              return
             }
-            e.currentTarget.setPointerCapture(e.pointerId)
-            return
+          } else if (isMobile && !hit) {
+            const scroller = scrollerRef.current || findScroller(overlayRef.current)
+            if (beginPan(scroller, e, e.clientX, e.clientY)) {
+              e.currentTarget.setPointerCapture(e.pointerId)
+              return
+            }
           }
         }
-        const point = getPoint(e)
-        const { docW, docH } = geomRef.current
         if (!docW || !docH) return
-        const anns = annRef.current[annKey] || []
-        let hit = null
-        for (let i = anns.length - 1; i >= 0; i--) {
-          if (hitTestAnnotation(anns[i], point.x * docW, point.y * docH, docW, docH)) {
-            hit = anns[i]
-            break
-          }
-        }
         if (hit) {
           e.stopPropagation()
           if (e.cancelable) e.preventDefault()
@@ -2720,26 +2835,25 @@ function useAnnotTools({ annKey, entry, notify }) {
       }
       paint(draftBounds(drawingRef.current))
     },
-    [tool, pen, shape, highlighter, eraser, getPoint, placeEraserCursor, annKey, paint, draftBounds, listDiffRegion, selectedIds, selectIds],
+    [tool, pen, shape, highlighter, eraser, getPoint, placeEraserCursor, annKey, paint, draftBounds, listDiffRegion, selectedIds, selectIds, beginPan],
   )
 
   const handleOverlayMove = useCallback(
     (e) => {
       const d = drawingRef.current
       const point = getPoint(e)
-      // 触摸：记录位置；双指会话中则按两指中点位移滚动文档
+      // 触摸：记录位置；滚动会话中则按锚点位移滚动文档（单指=手指，双指=两指中点）
       if (e.pointerType === 'touch' && touchRef.current.has(e.pointerId)) {
         touchRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
         const pan = panRef.current
         if (pan) {
-          const pts = [...touchRef.current.values()]
-          if (pts.length >= 2) {
-            if (e.cancelable) e.preventDefault()
-            const mx = (pts[0].x + pts[1].x) / 2
-            const my = (pts[0].y + pts[1].y) / 2
-            pan.scroller.scrollTop = pan.top - (my - pan.startY)
-            pan.scroller.scrollLeft = pan.left - (mx - pan.startX)
-          }
+          if (e.cancelable) e.preventDefault()
+          const { x, y } = panAnchor(pan)
+          pan.scroller.scrollTop = pan.top - (y - pan.startY)
+          pan.scroller.scrollLeft = pan.left - (x - pan.startX)
+          if (Math.abs(y - pan.startY) > 3 || Math.abs(x - pan.startX) > 3) pan.moved = true
+          // 采样供松手时算速度（惯性）
+          velocityRef.current.add(x, y, e.timeStamp || performance.now())
           return
         }
       }
@@ -2850,13 +2964,15 @@ function useAnnotTools({ annKey, entry, notify }) {
       }
       scheduleDrawFrame(rectUnion(prevDraft, draftBounds(d)))
     },
-    [getPoint, placeEraserCursor, scheduleDrawFrame, annKey, eraser, tool, paint, draftBounds, listDiffRegion, snapPoint, constrainCircle],
+    [getPoint, placeEraserCursor, scheduleDrawFrame, annKey, eraser, tool, paint, draftBounds, listDiffRegion, snapPoint, constrainCircle, panAnchor],
   )
 
   const handleOverlayLeave = useCallback((e) => {
     if (e?.pointerType === 'touch') {
-      touchRef.current.delete(e.pointerId)
-      if (touchRef.current.size < 2) panRef.current = null
+      // 按下时设了 pointer capture，手指仍归画布管：滚动会话还在时不能清掉它的位置记录，
+      // 否则锚点会退回起点、文档跳一下；滑出边界也照样能继续滚。收尾统一走 handleOverlayUp。
+      const pan = panRef.current
+      if (!pan || !pan.pointers.has(e.pointerId)) touchRef.current.delete(e.pointerId)
     }
     if (!drawingRef.current && eraserCursorRef.current) {
       eraserCursorRef.current.style.opacity = '0'
@@ -2906,11 +3022,8 @@ function useAnnotTools({ annKey, entry, notify }) {
 
   const handleOverlayUp = useCallback(
     (e) => {
-    // 触摸收尾：清掉手指记录；两指不足时结束滚动会话
-    if (e?.pointerType === 'touch') {
-      touchRef.current.delete(e.pointerId)
-      if (touchRef.current.size < 2) panRef.current = null
-    }
+    // 触摸收尾：滚动会话交给 finishTouchPan（松手带惯性，轻点=清空选择）
+    if (finishTouchPan(e)) return
     if (endPointerSession(e)) return
     const d = drawingRef.current
     if (!d) return
@@ -2955,7 +3068,7 @@ function useAnnotTools({ annKey, entry, notify }) {
     setShapeDraft(null)
     // 草稿的虚线/手柄要清掉，落笔区域重绘成实线
     paint(draftRegion)
-  }, [commit, annKey, paint, eraser, draftBounds, listDiffRegion, endPointerSession])
+  }, [commit, annKey, paint, eraser, draftBounds, listDiffRegion, endPointerSession, finishTouchPan])
 
   // DOM 批注（文本框 / 批注标记）
   const handleDomDown = useCallback(
@@ -3382,11 +3495,57 @@ function AnnotOverlay({ t }) {
 //       于是整页压暗变成只有工具栏那一栏半透明。
 // 挂到 body 下即可同时摆脱这两条约束（遮罩 z-index 40 < 弹层 50）。
 function Popover({ open, left, top, onClose, className = '', children }) {
+  const panelRef = useRef(null)
+  // 拖动后自由悬浮的位置（视口坐标）；null = 仍跟着按钮锚点走。
+  // 每次重新打开都清掉 —— 否则「上一次拖到角落」会变成下一次的默认位置，反而更难用。
+  const [freePos, setFreePos] = useState(null)
+  useEffect(() => {
+    if (!open) setFreePos(null)
+  }, [open])
   if (!open) return null
+
+  // 顶部拖条：按住可把设置面板拖到任意位置悬浮（竖版工具条 + 贴边时尤其有用，
+  // 否则弹层永远只能长在按钮旁边，挡住文档）。
+  const startDrag = (e) => {
+    if (e.button !== 0) return
+    const el = panelRef.current
+    if (!el) return
+    e.preventDefault()
+    // 不让这次按下冒泡到工具条：否则会被当成「拖工具栏」，两个东西一起动
+    e.stopPropagation()
+    const r = el.getBoundingClientRect()
+    const dx = e.clientX - r.left
+    const dy = e.clientY - r.top
+    const move = (ev) => {
+      setFreePos({
+        left: Math.max(6, Math.min(ev.clientX - dx, window.innerWidth - r.width - 6)),
+        top: Math.max(6, Math.min(ev.clientY - dy, window.innerHeight - r.height - 6)),
+      })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
   return createPortal(
     <>
       <div className="popover-backdrop" onClick={onClose} />
-      <div className={('pen-popover ' + className).trim()} style={{ left, top }}>
+      <div
+        ref={panelRef}
+        className={('pen-popover ' + className).trim() + (freePos ? ' is-floating' : '')}
+        style={freePos || { left, top }}
+      >
+        <div
+          className="pop-drag"
+          role="presentation"
+          title="按住拖动：把这个设置面板拖到任意位置悬浮"
+          onPointerDown={startDrag}
+        >
+          <span className="pop-drag-grip" aria-hidden="true" />
+        </div>
         {children}
       </div>
     </>,
@@ -3684,6 +3843,64 @@ function FloatingTextFormatBar({ t, target, fallbackRef, onHoverChange }) {
   )
 }
 
+// ── 悬浮工具栏：停靠 / 磁吸 / 横竖互换 ───────────────────────────────────
+// 「屏幕的上下左右」在这里落成「编辑区（.doc-view / .md-view / .text-view）的四边」：
+// 工具栏属于文档视图，吸到编辑区左边才不会压住左侧文件栏。
+const TB_EDGE = 10 // 停靠时与编辑区边缘的间距
+const TB_SNAP = 150 // 松手时距某条边多近算「磁吸」；四条边都够不着就自由悬浮
+const TB_SLOP = 3 // 位移超过它才算「拖动」，否则仍按点击处理
+// 竖版时藏在按钮里的文字（.btn-text）会消失，宽度只剩图标 + 内边距
+const TB_VERT_EDGES = { left: true, right: true }
+
+/** 编辑区四边（视口坐标）；量不到元素时退化成整个视口 */
+function tbBounds(el) {
+  const r = el?.getBoundingClientRect?.()
+  if (!r || !r.width) {
+    return { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }
+  }
+  return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+}
+
+/** 磁吸判定：先看「往哪边推」（离编辑区中心更远的那一轴），再在该轴的两条边里挑最近的一条。
+ *  为什么不四条边一起比距离：竖版工具栏本身就有大半屏高，横向离边 300px 时纵向往往已经贴着
+ *  下边了 —— 四条边一起比，它会被当成「想吸底边」而莫名其妙弹成横版。按轴判定 = 往哪推吸哪边。
+ *  四条边都够不着（推得不够远）时返回 null = 就地自由悬浮。 */
+function tbNearestEdge(x, y, w, h, b) {
+  const dx = x + w / 2 - (b.left + b.right) / 2
+  const dy = y + h / 2 - (b.top + b.bottom) / 2
+  const dLeft = Math.abs(x - b.left)
+  const dRight = Math.abs(b.right - (x + w))
+  const dTop = Math.abs(y - b.top)
+  const dBottom = Math.abs(b.bottom - (y + h))
+  const [edge, dist] =
+    Math.abs(dx) >= Math.abs(dy)
+      ? dLeft <= dRight
+        ? ['left', dLeft]
+        : ['right', dRight]
+      : dTop <= dBottom
+        ? ['top', dTop]
+        : ['bottom', dBottom]
+  return dist <= TB_SNAP ? edge : null
+}
+
+/** 停靠位置的内联样式。用 translate 贴边/居中，不必先量出工具栏自身尺寸 */
+function tbDockStyle(edge, b) {
+  switch (edge) {
+    case 'left':
+      return { left: b.left + TB_EDGE, top: (b.top + b.bottom) / 2, transform: 'translateY(-50%)' }
+    case 'right':
+      return {
+        right: window.innerWidth - b.right + TB_EDGE,
+        top: (b.top + b.bottom) / 2,
+        transform: 'translateY(-50%)',
+      }
+    case 'bottom':
+      return { left: (b.left + b.right) / 2, top: b.bottom - TB_EDGE, transform: 'translate(-50%, -100%)' }
+    default:
+      return { left: (b.left + b.right) / 2, top: b.top + TB_EDGE, transform: 'translateX(-50%)' }
+  }
+}
+
 function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
   const penRef = useRef(null)
   const hlRef = useRef(null)
@@ -3707,6 +3924,171 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
     previewTimerRef.current = setTimeout(() => setSizePreview(null), 900)
   }, [])
   useEffect(() => () => clearTimeout(previewTimerRef.current), [])
+
+  // ── 悬浮 / 停靠 / 横竖版 ────────────────────────────────────────────
+  // dockEdge：磁吸在哪条边；null = 自由悬浮（拖到编辑区中间松手）。
+  // vert：竖版排布。左/右停靠自动竖版、上/下停靠自动横版，也可以点工具栏最下方那个
+  //       转换按钮手动互换 —— 手动切换会顺带把停靠边一起挪到对应的边（横↔上、竖↔左）。
+  const [dockEdge, setDockEdge] = useState('top')
+  const [vert, setVert] = useState(false)
+  const [freePos, setFreePos] = useState({ left: 0, top: 0 })
+  const [bounds, setBounds] = useState(() => tbBounds(null))
+  const [drag, setDrag] = useState(null) // 拖动中的实时位置（含磁吸预览的边）
+  const dragMetaRef = useRef(null) // 指针抓取偏移、起始点、拖动开始时的尺寸
+  const dragUIRef = useRef(null) // 最新一帧的拖动状态：pointerup 读它，避免闭包拿到旧 state
+
+  // 编辑区四边：窗口缩放、侧栏折叠、切换标签都会改变它，
+  // 所以既听 resize，也观察宿主元素本身（.doc-view / .md-view / .text-view）。
+  useLayoutEffect(() => {
+    const host = tbRef.current?.parentElement
+    const measure = () =>
+      setBounds((prev) => {
+        const next = tbBounds(host)
+        return prev.left === next.left &&
+          prev.top === next.top &&
+          prev.right === next.right &&
+          prev.bottom === next.bottom
+          ? prev
+          : next
+      })
+    measure()
+    window.addEventListener('resize', measure)
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    if (host && ro) ro.observe(host)
+    return () => {
+      window.removeEventListener('resize', measure)
+      ro?.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 停靠时给编辑区让出位置。工具栏现在是 fixed 层、不再占文档流；不让位的话这一条会正好
+  // 压在 PDF 视图自己的 .pdf-toolbar 上，也会盖住正文第一行 —— 看起来像「两条工具栏叠在一起」。
+  // 只按「已落定」的停靠边让位（拖动过程中不重算），否则拖过某条边时正文会来回跳。
+  useLayoutEffect(() => {
+    const host = tbRef.current?.parentElement
+    const el = tbRef.current
+    if (!host || !el) return undefined
+    const props = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']
+    const prev = props.map((p) => host.style[p])
+    if (dockEdge) {
+      const r = el.getBoundingClientRect()
+      const size = 2 * TB_EDGE + (vert ? r.width : r.height)
+      const key = {
+        top: 'paddingTop',
+        right: 'paddingRight',
+        bottom: 'paddingBottom',
+        left: 'paddingLeft',
+      }[dockEdge]
+      if (key) host.style[key] = `${Math.round(size)}px`
+    }
+    return () => {
+      props.forEach((p, i) => {
+        host.style[p] = prev[i]
+      })
+    }
+  }, [dockEdge, vert, bounds])
+
+  // 自由悬浮时把工具栏夹回编辑区内。竖版比横版高得多：先在中间随便落一个位置、
+  // 再点转换按钮，同一个左上角会把下半截顶到屏幕外 —— 连最下面那个转换按钮都点不到了。
+  useLayoutEffect(() => {
+    if (dockEdge || drag) return undefined
+    const el = tbRef.current
+    if (!el) return undefined
+    const b = tbBounds(el.parentElement)
+    const left = Math.max(b.left + 2, Math.min(freePos.left, b.right - el.offsetWidth - 2))
+    const top = Math.max(b.top + 2, Math.min(freePos.top, b.bottom - el.offsetHeight - 2))
+    if (Math.abs(left - freePos.left) > 0.5 || Math.abs(top - freePos.top) > 0.5) {
+      setFreePos({ left, top })
+    }
+    return undefined
+  }, [dockEdge, vert, freePos, drag, bounds])
+
+  const setDragUI = (v) => {
+    dragUIRef.current = v
+    setDrag(v)
+  }
+  const onToolbarDragMove = (e) => {
+    const d = dragMetaRef.current
+    if (!d) return
+    if (!d.moved) {
+      // 抖动阈值：不越过它就不算拖动，否则「点一下工具栏空白处」会把工具栏挪位
+      if (Math.abs(e.clientX - d.sx) < TB_SLOP && Math.abs(e.clientY - d.sy) < TB_SLOP) return
+      d.moved = true
+    }
+    // 夹在编辑区内，避免拖出可视范围后找不回来
+    const left = Math.max(d.b.left + 2, Math.min(e.clientX - d.dx, d.b.right - d.w - 2))
+    const top = Math.max(d.b.top + 2, Math.min(e.clientY - d.dy, d.b.bottom - d.h - 2))
+    setDragUI({ left, top, edge: tbNearestEdge(left, top, d.w, d.h, d.b) })
+  }
+  const onToolbarDragEnd = () => {
+    window.removeEventListener('pointermove', onToolbarDragMove)
+    window.removeEventListener('pointerup', onToolbarDragEnd)
+    const meta = dragMetaRef.current
+    const cur = dragUIRef.current
+    dragMetaRef.current = null
+    setDragUI(null)
+    if (!meta || !meta.moved || !cur) return // 没真的拖动 = 一次点击，什么都不做
+    closeAllPopsRef.current?.()
+    if (cur.edge) {
+      // 磁吸吸附：吸到左/右边就转竖版，吸到上/下边就转横版
+      setDockEdge(cur.edge)
+      setVert(Boolean(TB_VERT_EDGES[cur.edge]))
+    } else {
+      // 四条边都够不着 → 落在原地自由悬浮，方向保持不变
+      setDockEdge(null)
+      setFreePos({ left: cur.left, top: cur.top })
+    }
+  }
+  const startToolbarDrag = (e) => {
+    if (e.button !== 0) return
+    const el = tbRef.current
+    if (!el) return
+    e.preventDefault() // 防止拖动时把工具栏上的文字选中
+    e.stopPropagation()
+    const r = el.getBoundingClientRect()
+    const b = tbBounds(el.parentElement)
+    dragMetaRef.current = {
+      dx: e.clientX - r.left,
+      dy: e.clientY - r.top,
+      w: r.width,
+      h: r.height,
+      sx: e.clientX,
+      sy: e.clientY,
+      moved: false,
+      b,
+    }
+    setBounds(b)
+    window.addEventListener('pointermove', onToolbarDragMove)
+    window.addEventListener('pointerup', onToolbarDragEnd)
+  }
+  // 工具条空白处也能拖：只要按下的不是按钮/输入控件（那些是「用工具」，不是「搬工具」）
+  const onBarPointerDown = (e) => {
+    if (e.target?.closest?.('button, input, select, textarea, a, label')) return
+    startToolbarDrag(e)
+  }
+  /** 横 ↔ 竖互换。竖版停在左/右边、横版停在上/下边，所以顺带把停靠边也换过去 */
+  const toggleOrientation = () => {
+    closeAllPopsRef.current?.()
+    if (vert) {
+      setVert(false)
+      if (TB_VERT_EDGES[dockEdge]) setDockEdge('top')
+    } else {
+      setVert(true)
+      if (dockEdge === 'top') setDockEdge('left')
+      else if (dockEdge === 'bottom') setDockEdge('right')
+    }
+  }
+
+  // 拖动中若已经够到某条边，就实时按「吸附后的样子」渲染 —— 松手前先看到结果（含竖版切换）
+  const snapEdge = drag?.edge || null
+  const tbEdge = snapEdge ?? dockEdge
+  const isVert = snapEdge ? Boolean(TB_VERT_EDGES[snapEdge]) : vert
+  const tbStyle = snapEdge
+    ? tbDockStyle(snapEdge, bounds)
+    : dockEdge
+      ? tbDockStyle(dockEdge, bounds)
+      : { left: freePos.left, top: freePos.top }
 
   // 滑杆上的「级数」→ 画布上真实笔迹宽度（CSS px）。公式与 drawAnnotation / eraser-cursor 保持一致，
   // 这样屏幕中央显示的粗细就是落笔后的实际粗细。
@@ -3746,19 +4128,45 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
     return () => view.style.removeProperty('--doc-zoom')
   }, [zoom])
 
-  // 弹窗锚定到对应图标正下方（用视口坐标，因为弹层 portal 到 body 后是 position: fixed）。
-  // 右侧防溢出：留出弹层宽度 260 + 12 间距；下方放不下就翻到按钮上方 ——
+  // 弹窗锚定到对应图标旁边（用视口坐标，因为弹层 portal 到 body 后是 position: fixed）。
+  // 横版：贴按钮正下方，下方放不下就翻到上方；左右防溢出 ——
   // 否则矮窗口 / 横屏手机上弹层会被窗口底边裁掉（原来只处理了 left）。
-  const anchor = (btn, fallbackLeft = 60, estHeight = 180) => {
-    if (!btn) return { left: fallbackLeft, top: 96 }
+  // 竖版：改贴到按钮的左/右侧。竖版工具条是竖着的一条，弹层再放「下面」会把整条工具栏盖住。
+  const anchor = (btn, estHeight = 180, estWidth = 272) => {
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    if (!btn) return { left: 12, top: Math.max(12, bounds.top + 12) }
     const r = btn.getBoundingClientRect()
-    const maxLeft = Math.max(8, window.innerWidth - 272)
-    const left = Math.max(8, Math.min(r.left, maxLeft))
-    const below = r.bottom + 8
-    if (below + estHeight > window.innerHeight - 8 && r.top - 8 - estHeight > 8) {
-      return { left, top: r.top - 8 - estHeight }
+    const side = isVert
+      ? tbEdge === 'right'
+        ? 'left'
+        : tbEdge === 'left'
+          ? 'right'
+          : r.right + 10 + estWidth <= vw - 8
+            ? 'right'
+            : 'left'
+      : null
+    if (side) {
+      // 竖版贴的是「整条工具栏」的边，不是按钮的边 —— 工具栏还有内边距和分组底色，
+      // 按按钮算的话弹层会压住工具栏右缘那几像素。
+      const base = tbRef.current?.getBoundingClientRect() || r
+      const left =
+        side === 'right'
+          ? Math.max(8, Math.min(base.right + 10, vw - estWidth - 8))
+          : Math.max(8, base.left - 10 - estWidth)
+      return { left, top: Math.max(8, Math.min(r.top, vh - estHeight - 8)) }
     }
-    return { left, top: Math.min(below, Math.max(8, window.innerHeight - estHeight - 8)) }
+    const left = Math.max(8, Math.min(r.left, Math.max(8, vw - estWidth)))
+    // 横版同理：贴「整条工具栏」的上/下边。工具栏比按钮高（内边距 + 分组底色），
+    // 按按钮的边算，弹层会压住工具栏几条像素；吸底时更明显（翻上来正好盖住按钮那一行）。
+    const barR = tbRef.current?.getBoundingClientRect()
+    const inBar = barR && r.top >= barR.top - 1 && r.bottom <= barR.bottom + 1
+    const below = (inBar ? barR.bottom : r.bottom) + 8
+    const flipBase = inBar ? barR.top : r.top
+    if (below + estHeight > vh - 8 && flipBase - 8 - estHeight > 8) {
+      return { left, top: flipBase - 8 - estHeight }
+    }
+    return { left, top: Math.min(below, Math.max(8, vh - estHeight - 8)) }
   }
   // 记录「刚打开设置」的时刻，用于把双击的第二下识别为同一次手势
   const lastOpenAtRef = useRef(0)
@@ -3766,22 +4174,22 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
     lastOpenAtRef.current = Date.now()
   }
   const openPen = () => {
-    setPenPos(anchor(penRef.current, 60, 172))
+    setPenPos(anchor(penRef.current, 172))
     markOpened()
     t.setPenOpen(true)
   }
   const openHighlighter = () => {
-    setHlPos(anchor(hlRef.current, 60, 172))
+    setHlPos(anchor(hlRef.current, 172))
     markOpened()
     t.setHighlighterOpen(true)
   }
   const openEraser = () => {
-    setEraserPos(anchor(eraserRef.current, 60, 226))
+    setEraserPos(anchor(eraserRef.current, 226))
     markOpened()
     t.setEraserOpen(true)
   }
   const openShape = () => {
-    setShapePos(anchor(shapeRef.current, 60, 284))
+    setShapePos(anchor(shapeRef.current, 284))
     markOpened()
     t.setShapeOpen(true)
   }
@@ -3873,7 +4281,26 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
   return (
     // 文字格式栏已改成浮层（见 FloatingTextFormatBar），不再占工具条第二行，
     // 所以这里不再需要 has-text-bar 换行开关，出现格式栏也不会推挤文档。
-    <div className="doc-toolbar" ref={tbRef}>
+    <div
+      ref={tbRef}
+      className={
+        `doc-toolbar is-float ${isVert ? 'is-vertical' : 'is-horizontal'} dock-${tbEdge || 'free'}` +
+        (drag ? ' is-dragging' : '') +
+        (snapEdge ? ' is-snapping' : '')
+      }
+      style={tbStyle}
+      onPointerDown={onBarPointerDown}
+    >
+      {/* 拖动手柄：按住可把整条工具栏拖走，松手磁吸到编辑区上/下/左/右四边 */}
+      <button
+        type="button"
+        className="toolbar-drag-handle icon-btn"
+        title="按住拖动工具栏：松手会磁吸到编辑区上/下/左/右四边；拖到中间则自由悬浮"
+        aria-label="拖动工具栏"
+        onPointerDown={startToolbarDrag}
+      >
+        {isVert ? <GripVertical size={15} /> : <GripHorizontal size={15} />}
+      </button>
       <div className="tool-group">
         <ToolButton
           active={t.tool === 'select'}
@@ -3975,6 +4402,19 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
         <button className="icon-btn" title="放大显示" onClick={() => setZoom((z) => Math.min(200, z + 10))}>
           <ZoomIn size={16} />
         </button>
+      </div>
+      {/* 最下方（竖版）/ 最右侧（横版）的转换按钮：横版 ↔ 竖版互转。
+          图标画的是「转过去之后的样子」：要变竖版就显示三列，要变横版就显示三行。 */}
+      <div className="tool-group toolbar-orient-group">
+        <ToolButton
+          title={
+            isVert
+              ? '转为横版工具栏（吸附到编辑区上/下边）'
+              : '转为竖版工具栏（吸附到编辑区左/右边）'
+          }
+          icon={isVert ? Rows3 : Columns3}
+          onClick={toggleOrientation}
+        />
       </div>
       <Popover open={t.penOpen} left={penPos.left} top={penPos.top} onClose={() => t.setPenOpen(false)}>
             <div className="pop-title">画笔设置</div>
@@ -4328,7 +4768,7 @@ function DocxView({ entry, notify }) {
           onClick={() => setEditing(!editing)}
         >
           <TextCursor size={15} />
-          {editing ? '退出编辑' : '编辑内容'}
+          <span className="btn-text">{editing ? '退出编辑' : '编辑内容'}</span>
         </button>
         <NewPageButton
           onClick={addPage}
@@ -4337,7 +4777,7 @@ function DocxView({ entry, notify }) {
         {(editing || pageDirty) && (
           <button className="tool-btn primary" onClick={saveContent} disabled={contentSaving}>
             <Save size={15} />
-            {contentSaving ? '保存中…' : '保存内容到.docx'}
+            <span className="btn-text">{contentSaving ? '保存中…' : '保存内容到.docx'}</span>
           </button>
         )}
       </div>
@@ -4349,7 +4789,7 @@ function DocxView({ entry, notify }) {
           onMouseDown={(e) => e.preventDefault()}
         >
           <Highlighter size={15} />
-          高亮选中文字
+          <span className="btn-text">高亮选中文字</span>
         </button>
       </div>
     </>
@@ -5155,7 +5595,7 @@ function EpubView({ entry, notify }) {
         onClick={() => setEditing(!editing)}
       >
         <TextCursor size={15} />
-        {editing ? '退出编辑' : '编辑内容'}
+        <span className="btn-text">{editing ? '退出编辑' : '编辑内容'}</span>
       </button>
       <NewPageButton
         onClick={addPage}
@@ -5165,7 +5605,7 @@ function EpubView({ entry, notify }) {
       {(editing || pageDirty) && (
         <button className="tool-btn primary" onClick={saveContent} disabled={contentSaving}>
           <Save size={15} />
-          {contentSaving ? '保存中…' : '保存到EPUB'}
+          <span className="btn-text">{contentSaving ? '保存中…' : '保存到EPUB'}</span>
         </button>
       )}
     </div>
@@ -5759,7 +6199,7 @@ function ExcelView({ entry, notify }) {
           onClick={toggleEditing}
         >
           <TextCursor size={15} />
-          {editing ? '退出编辑' : '编辑内容'}
+          <span className="btn-text">{editing ? '退出编辑' : '编辑内容'}</span>
         </button>
         <NewPageButton
           onClick={addPage}
@@ -5768,7 +6208,7 @@ function ExcelView({ entry, notify }) {
         {(editing || wbOps.length > 0 || sheets.some((s) => s.ops.length > 0)) && (
           <button className="tool-btn primary" onClick={saveContent} disabled={saving}>
             <Save size={15} />
-            {saving ? '保存中…' : '保存回Excel'}
+            <span className="btn-text">{saving ? '保存中…' : '保存回Excel'}</span>
           </button>
         )}
       </div>
@@ -6250,7 +6690,7 @@ function OfficeView({ entry, notify }) {
             />
             <button className="tool-btn" onClick={openNative}>
               <ExternalLink size={15} />
-              浏览器直开
+              <span className="btn-text">浏览器直开</span>
             </button>
           </div>
         }
