@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { saveFileBytes } from '../lib/FileProcessor.js'
+import { isNativeSaveAvailable } from '../lib/nativeSave.js'
 import { setOriginalBytes } from '../lib/pdf/pdfEngine.js'
 
 const EDITOR_URL = '/dart-pdf-editor/index.html'
@@ -56,12 +57,13 @@ export default function OpenPdfStudioView({ entry, notify }) {
       try {
         const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes)
         if (bytes.length < 4 || bytes[0] !== 0x25 || bytes[1] !== 0x50 || bytes[2] !== 0x44 || bytes[3] !== 0x46) throw new Error('编辑器返回的不是有效 PDF')
-        if (!entry.handle) throw new Error('当前 PDF 没有可写文件句柄，请重新打开')
+        // APK 里没有句柄也能存（downloadFallback 走原生下载目录）；浏览器无句柄仍要求重新打开
+        if (!entry.handle && !isNativeSaveAvailable()) throw new Error('当前 PDF 没有可写文件句柄，请重新打开')
         const saveSeq = ++saveSeqRef.current
-        await saveFileBytes(entry, bytes)
+        const savedTo = await saveFileBytes(entry, bytes)
         if (saveSeq !== saveSeqRef.current) return
         setOriginalBytes(entry.id, bytes)
-        notify('PDF 已由 dart_pdf_editor 保存', 'success')
+        notify(savedTo ? `PDF 已保存到 ${savedTo}` : 'PDF 已由 dart_pdf_editor 保存', 'success')
       } catch (err) { notify('PDF 保存失败：' + (err?.message || err), 'error') }
     }
     window.addEventListener('message', onMessage)

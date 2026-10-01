@@ -15,6 +15,7 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
 
             <intent-filter>
@@ -38,4 +39,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 保存到公共下载目录：仅 Android 6~9（API 23~28）需要；10+ 走 MediaStore 不需要 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 </manifest>

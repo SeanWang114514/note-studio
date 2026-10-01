@@ -16,6 +16,7 @@ import { PDFDocument } from 'pdf-lib'
 import { openPdf as engineOpenPdf, getOriginalBytes, setOriginalBytes } from './pdf/pdfEngine.js'
 import { renderPageToCanvas, renderTextLayer } from './pdf/pdfRenderer.js'
 import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes, writeTextEditsToPdf } from './pdf/pdfSaver.js'
+import { isNativeSaveAvailable, saveToDownloads } from './nativeSave.js'
 
 export const FILE_TYPES = {
   PDF: 'pdf',
@@ -200,7 +201,16 @@ export async function readText(file) {
   return file.text()
 }
 
-function downloadFallback(name, data, type = 'application/octet-stream') {
+/**
+ * 无 File System Access 句柄时的保存出口。
+ * - APK（Capacitor WebView 不认 <a download>）→ 原生写进手机「下载/Note Studio/」，
+ *   返回展示路径（如 Download/Note Studio/笔记.md），供保存提示显示落点；
+ * - 浏览器 → 触发一次下载，返回 undefined。
+ */
+async function downloadFallback(name, data, type = 'application/octet-stream') {
+  if (isNativeSaveAvailable()) {
+    return saveToDownloads(name || 'document', data)
+  }
   const blob = data instanceof Blob ? data : new Blob([data], { type })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -213,10 +223,28 @@ function downloadFallback(name, data, type = 'application/octet-stream') {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+/**
+ * 原生保存成功后，把 entry.file 换成刚写出去的最新内容。
+ * 句柄路径（桌面）靠 handle.getFile() 拿新字节；APK 里没有句柄，entry.file 若不刷新，
+ * 保存后的 load()/readEntryBytes 还会读到保存前的旧内容（Excel 保存后回读会「改了又变回去」）。
+ */
+function refreshEntryFile(entry, data) {
+  try {
+    const type =
+      typeof data === 'string'
+        ? 'text/plain;charset=utf-8'
+        : entry?.file?.type || 'application/octet-stream'
+    entry.file = new File([data], entry.name, { type, lastModified: Date.now() })
+  } catch {
+    // 构造 File 失败（极端 WebView）时保持旧引用，至少不比刷新前更糟
+  }
+}
+
 export async function saveTextFile(entry, content) {
   if (!entry.handle) {
-    downloadFallback(entry.name, content, 'text/plain;charset=utf-8')
-    return
+    const savedTo = await downloadFallback(entry.name, content, 'text/plain;charset=utf-8')
+    if (savedTo) refreshEntryFile(entry, content)
+    return savedTo
   }
   if (!(await ensurePermission(entry.handle))) {
     throw new Error('文件写入权限已失效，请重新打开文件后再保存')
@@ -226,12 +254,13 @@ export async function saveTextFile(entry, content) {
   await writable.close()
 }
 
-/** 通用：把字节写回原文件句柄（docx/epub 等编辑保存回用） */
-/** 通用：无 File System Access API 时通过系统下载保存副本。 */
+/** 通用：把字节写回原文件句柄（docx/epub 等编辑保存回用）。 */
+/** 通用：无 File System Access API 时通过原生（APK）或系统下载保存副本。 */
 export async function saveFileBytes(entry, bytes) {
   if (!entry.handle) {
-    downloadFallback(entry.name, bytes)
-    return
+    const savedTo = await downloadFallback(entry.name, bytes)
+    if (savedTo) refreshEntryFile(entry, bytes)
+    return savedTo
   }
   if (!(await ensurePermission(entry.handle, 'readwrite'))) {
     throw new Error('文件写入权限已失效，请重新打开文件后再保存')
@@ -373,7 +402,7 @@ export async function saveEpubFromHtml(entry, path, html) {
   const zip = await JSZip.loadAsync(await readEntryBytes(entry))
   zip.file(path, html)
   const blob = await generateEpubZip(zip)
-  await saveFileBytes(entry, new Uint8Array(await blob.arrayBuffer()))
+  return saveFileBytes(entry, new Uint8Array(await blob.arrayBuffer()))
 }
 
 // ─── epub 全书读写（多文件合并显示 + 逐文件保存回）───────────────────
@@ -647,7 +676,7 @@ export async function saveEpubBook(entry, files, rootEl, opts = {}) {
   })
   if (added.length) await registerEpubChapters(zip, opts.opfPath, added)
   const blob = await generateEpubZip(zip)
-  await saveFileBytes(entry, new Uint8Array(await blob.arrayBuffer()))
+  return saveFileBytes(entry, new Uint8Array(await blob.arrayBuffer()))
 }
 
 /**
@@ -757,8 +786,8 @@ export async function saveExcelChanges(entry, changes) {
   if (/\.xlsx$/i.test(name)) {
     try {
       const out = await editExcelWithOpenpyxl(entry, changes)
-      await saveFileBytes(entry, out)
-      return
+      const savedTo = await saveFileBytes(entry, out)
+      return { via: 'openpyxl', savedTo }
     } catch (err) {
       // 服务不可用/失败 → 回退浏览器端 SheetJS 方案
       console.warn('openpyxl 编辑失败，回退 SheetJS:', err?.message || err)
@@ -783,7 +812,8 @@ export async function saveExcelChanges(entry, changes) {
   }
   const bookType = /\.xls$/i.test(name) ? 'biff8' : 'xlsx'
   const out = new Uint8Array(XLSX.write(wb, { type: 'array', bookType }))
-  await saveFileBytes(entry, out)
+  const savedTo = await saveFileBytes(entry, out)
+  return { via: 'sheetjs', savedTo }
 }
 
 /** 本地 Python 转换服务地址（可用 VITE_CONVERT_URL 覆盖，与 pdfConvert.js 保持一致） */
@@ -1089,15 +1119,11 @@ export async function savePdfBack(entry, pdfDoc, annotations, textEdits = []) {
     newBytes = await writeTextEditsToPdf(pdfDoc, newBytes, textEdits)
   }
 
-  if (!(await ensurePermission(entry.handle, 'readwrite'))) {
-    throw new Error('文件写入权限已失效，请重新打开文件后再保存')
-  }
-  const writable = await entry.handle.createWritable()
-  await writable.write(newBytes)
-  await writable.close()
+  // 统一走 saveFileBytes：有句柄写回原文件；APK 里没句柄 → 原生写进下载目录
+  const savedTo = await saveFileBytes(entry, newBytes)
 
   setOriginalBytes(entry.id, newBytes)
-  return newBytes
+  return { bytes: newBytes, savedTo }
 }
 
 /**

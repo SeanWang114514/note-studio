@@ -2,7 +2,11 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover：启用 env(safe-area-inset-*) 刘海/手势条安全区；
+         interactive-widget=resizes-content：软键盘弹出时缩放布局视口（工具栏不被键盘盖住）。
+         缩放锁（maximum-scale/user-scalable=no）只在 APK 里由 lib/mobile.js 动态加上，
+         网页端保持可缩放（无障碍）。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>笔记工作台</title>
   </head>
   <body>

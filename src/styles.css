@@ -4472,3 +4472,34 @@ html[data-mobile='1'] .icon-btn,
 html[data-mobile='1'] .tab {
   -webkit-tap-highlight-color: transparent;
 }
+
+/* ── 移动端安全区兜底（刘海/挖孔/手势条） ──────────────────────────
+   正常路径靠 capacitor adjustMarginsForEdgeToEdge:'auto' 把 WebView 整体垫出系统区
+   （此时页面内 env() 为 0，下面全是 no-op）；这里防的是「个别机型没吃到边距」时
+   固定/浮动控件被系统区压住。仅移动端生效，桌面端尺寸不变。 */
+html[data-mobile='1'] .toast {
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+}
+
+html[data-mobile='1'] .pdf-page-controls {
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ── 仅 APK（data-native）：禁用页面缩放 ────────────────────────────
+   双指捏合、双击放大、输入框聚焦自动放大都会把工具栏/弹层挤出屏幕；
+   viewport meta 已由 lib/mobile.js 动态锁成 maximum-scale=1 + user-scalable=no，
+   这里再用 touch-action 兜一层（防个别 WebView 忽略 meta 的双击缩放）。
+   网页端绝不加：缩放是无障碍能力。 */
+html[data-native='1'] {
+  touch-action: pan-x pan-y; /* 允许拖动滚动，禁掉捏合与双击放大 */
+  -webkit-text-size-adjust: 100%; /* 关掉 Android 字体自动放大，防布局被撑爆 */
+}
+
+html[data-native='1'] input,
+html[data-native='1'] textarea,
+html[data-native='1'] select {
+  /* WebView 对 <16px 的输入框聚焦会放大整页；16px 起步掐掉这个自动缩放。
+     max(16px, 1em) 里的 1em 按父级字号算：大字号控件不缩小，小字号统一抬到 16。 */
+  font-size: max(16px, 1em) !important;
+}

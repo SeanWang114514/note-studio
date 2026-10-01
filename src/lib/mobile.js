@@ -9,8 +9,8 @@
 
 let cached = null
 
-/** Capacitor 原生壳（APK）判定：注入的 window.Capacitor 优先 */
-function isNativeShell() {
+/** Capacitor 原生壳（APK）判定：注入的 window.Capacitor 优先。导出给返回键/保存等原生分支用。 */
+export function isNativeShell() {
   try {
     const cap = typeof window !== 'undefined' ? window.Capacitor : null
     if (!cap) return false
@@ -55,6 +55,19 @@ export function tagMobileShell() {
     const el = document.documentElement
     if (mobile) el.setAttribute('data-mobile', '1')
     else el.removeAttribute('data-mobile')
+    const native = isNativeShell()
+    if (native) {
+      // 仅 APK：锁死页面缩放（双指/双击/输入框聚焦自动放大都会把工具栏挤出屏幕）。
+      // 动态改 viewport meta（WebView 会重新应用）；网页端保持可缩放（无障碍），不锁。
+      el.setAttribute('data-native', '1')
+      const viewport = document.querySelector('meta[name="viewport"]')
+      viewport?.setAttribute(
+        'content',
+        'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content',
+      )
+    } else {
+      el.removeAttribute('data-native')
+    }
   } catch {
     // 无 document（SSR/测试）时忽略
   }

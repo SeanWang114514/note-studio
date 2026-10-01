@@ -97,7 +97,9 @@ import { PanelSplitter } from './components/PanelSplitter.jsx'
 import { usePanel } from './lib/panelLayout.js'
 import useNewPageUndo from './lib/useNewPageUndo.js'
 import { makeSurfaceRescaleSettler, useSurfaceRescale } from './lib/surfaceRescale.js'
-import { isMobileShell, tagMobileShell } from './lib/mobile.js'
+import { isMobileShell, isNativeShell, tagMobileShell } from './lib/mobile.js'
+import { closeTopOverlay, useOverlay } from './lib/overlayStack.js'
+import { App as CapApp } from '@capacitor/app'
 import { createVelocityTracker, startMomentumScroll } from './lib/momentumScroll.js'
 import {
   DEFAULT_TEXT_STYLE,
@@ -859,6 +861,35 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [sidebar])
+
+  // ── Android 返回键（仅 APK）：先关弹层，再回退，最后才退出 ──
+  // 设置/移动菜单注册进弹层栈（画笔弹层、斜杠菜单在各自组件里注册），
+  // 返回键按下时 closeTopOverlay 关最上面一层，和 Esc 同语义。
+  useOverlay(settingsOpen, () => setSettingsOpen(false))
+  useOverlay(mobileMenuOpen, () => setMobileMenuOpen(false))
+
+  useEffect(() => {
+    if (!isNativeShell()) return undefined
+    let disposed = false
+    let listenerHandle = null
+    // 注册监听后 Capacitor 不再自己处理返回键（否则没监听就直接退出），
+    // 所以这里必须把「退出」也接回来，否则 APK 里返回键会变成没反应。
+    CapApp.addListener('backButton', (event) => {
+      if (closeTopOverlay()) return // 1) 弹层/菜单先关
+      if (event?.canGoBack) {
+        window.history.back() // 2) WebView 有历史就回退（内页跳转才会出现）
+        return
+      }
+      CapApp.exitApp().catch(() => {}) // 3) 什么都没得关才退出
+    }).then((h) => {
+      if (disposed) h.remove()
+      else listenerHandle = h
+    })
+    return () => {
+      disposed = true
+      if (listenerHandle) listenerHandle.remove()
+    }
+  }, [])
 
   return (
     <div className="app">
@@ -4270,6 +4301,8 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
   const closeAllPopsRef = useRef(closeAllPops)
   closeAllPopsRef.current = closeAllPops
   const anyPopOpen = t.penOpen || t.highlighterOpen || t.eraserOpen || t.shapeOpen
+  // APK 返回键：任一设置弹层开着时先关弹层（栈顶回调走最新 closeAllPops）
+  useOverlay(anyPopOpen, closeAllPops)
 
   // 预览只属于「产生它的那个设置弹层」：这个弹层一关（Esc / 点外面 / 再点工具按钮 / 换成别的弹层），
   // 屏幕中央的预览立刻收起。不主动清掉的话，它要等 900ms 自动隐藏计时走完才淡出 ——
@@ -4303,6 +4336,8 @@ function AnnotToolbar({ t, extra, showThumbsToggle = false }) {
   const [barHover, setBarHover] = useState(false)
   const textTarget = editingTextAnn || (barHover ? t.selectedTextAnn : null)
   const showTextBar = Boolean(textTarget)
+  // APK 返回键：文字格式浮层是「编辑中的弹层」，先退出编辑（软键盘开着时返回键由系统先关键盘）
+  useOverlay(Boolean(editingTextAnn), () => t.setEditingId(null))
 
   // Esc 关闭设置面板；点击工具栏以外的地方也关闭。
   // 注意：这里不能依赖遮罩层接收点击——遮罩会在双击的第二下盖住工具按钮，
@@ -4777,12 +4812,12 @@ function DocxView({ entry, notify }) {
     setContentSaving(true)
     try {
       const bytes = await buildDocxFromHtml(docRef.current.innerHTML)
-      await saveFileBytes(entry, bytes)
+      const savedTo = await saveFileBytes(entry, bytes)
       // 批注存缓存（IndexedDB），不再写回文件 →不弹权限窗
       await saveAnnotations(entry, tools.annRef.current)
       setEditing(false)
       setPageDirty(false)
-      notify('文档内容已保存回 .docx', 'success')
+      notify(savedTo ? `文档已保存到 ${savedTo}` : '文档内容已保存回 .docx', 'success')
     } catch (err) {
       notify(`内容保存失败：${err.message}`, 'error')
     } finally {
@@ -4918,6 +4953,8 @@ function MarkdownView({ entry, notify }) {
   const [savedAt, setSavedAt] = useState('')
   const [slashId, setSlashId] = useState(null)
   const [saving, setSaving] = useState(false)
+  // APK 返回键：斜杠菜单开着时先关菜单（软键盘开着时返回键由系统先关键盘）
+  useOverlay(Boolean(slashId), () => setSlashId(null))
   const blocksRef = useRef(blocks)
   const textRef = useRef({})
   const elRef = useRef({})
@@ -4959,7 +4996,7 @@ function MarkdownView({ entry, notify }) {
     const md = blocksToMarkdown(blocksRef.current, textRef.current)
     setSaving(true)
     try {
-      await saveTextFile(entry, md)
+      const savedTo = await saveTextFile(entry, md)
       setDirty(false)
       setSavedAt(
         new Date().toLocaleTimeString('zh-CN', {
@@ -4967,7 +5004,7 @@ function MarkdownView({ entry, notify }) {
           minute: '2-digit',
         }),
       )
-      notify('已保存', 'success')
+      notify(savedTo ? `已保存到 ${savedTo}` : '已保存', 'success')
     } catch (err) {
       notify(`保存失败：${err.message}`, 'error')
     } finally {
@@ -5669,7 +5706,7 @@ function EpubView({ entry, notify }) {
       }
       // 按章间标记拆回各章，逐文件写回（保留每章 head/命名空间）；
       // 「新建一页」追加的章节不在原 zip 里，saveEpubBook 会创建文件并登记进 OPF
-      await saveEpubBook(entry, epubBook.files, root, { opfPath: epubBook.opfPath })
+      const savedTo = await saveEpubBook(entry, epubBook.files, root, { opfPath: epubBook.opfPath })
       // 保存后视图同步为已保存内容（含还原后的原始引用，重新渲染时再次惰性换 Blob）
       setHtml(root.innerHTML)
       // 重新内嵌批注（zip 重打包会覆盖此前内嵌的批注数据）
@@ -5678,7 +5715,12 @@ function EpubView({ entry, notify }) {
       }
       setEditing(false)
       setPageDirty(false)
-      notify(`EPUB 内容已保存（${epubBook.files.length} 章）`, 'success')
+      notify(
+        savedTo
+          ? `EPUB 内容已保存到 ${savedTo}（${epubBook.files.length} 章）`
+          : `EPUB 内容已保存（${epubBook.files.length} 章）`,
+        'success',
+      )
     } catch (err) {
       notify(`EPUB 保存失败：${err.message}`, 'error')
     } finally {
@@ -6391,9 +6433,13 @@ function ExcelView({ entry, notify }) {
           merges: s.merges,
         })),
       }
-      await saveExcelChanges(entry, payload)
+      const saved = await saveExcelChanges(entry, payload)
       await load()
-      notify('已保存回 Excel 文件（openpyxl 修改）', 'success')
+      const via = saved?.via === 'sheetjs' ? 'SheetJS 兜底，样式可能简化' : 'openpyxl 修改'
+      notify(
+        saved?.savedTo ? `已保存到 ${saved.savedTo}（${via}）` : `已保存回 Excel 文件（${via}）`,
+        'success',
+      )
     } catch (err) {
       notify(`保存失败：${err.message}`, 'error')
     } finally {
@@ -6726,7 +6772,7 @@ function TextView({ entry, notify }) {
   const saveNow = useCallback(async () => {
     setSaving(true)
     try {
-      await saveTextFile(entry, textRef.current)
+      const savedTo = await saveTextFile(entry, textRef.current)
       setDirty(false)
       setSavedAt(
         new Date().toLocaleTimeString('zh-CN', {
@@ -6734,7 +6780,7 @@ function TextView({ entry, notify }) {
           minute: '2-digit',
         }),
       )
-      notify('已保存', 'success')
+      notify(savedTo ? `已保存到 ${savedTo}` : '已保存', 'success')
     } catch (err) {
       notify(`保存失败：${err.message}`, 'error')
     } finally {

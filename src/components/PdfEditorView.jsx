@@ -351,9 +351,14 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
       if (!bytes) throw new Error('找不到原始文件字节，请重新打开')
       const ann = await loadAnnotations(entry)
       const anns = (ann.pdf || []).filter((a) => a.type !== 'textEdit')
-      const newBytes = await savePdfBack(entry, pdf, anns)
+      const { bytes: newBytes, savedTo } = await savePdfBack(entry, pdf, anns)
       await saveAnnotations(entry, { ...ann, pdf: anns })
-      notify('批注已写入 PDF（' + newBytes.length + ' 字节）', 'success')
+      notify(
+        savedTo
+          ? `批注已写入 PDF 并保存到 ${savedTo}`
+          : '批注已写入 PDF（' + newBytes.length + ' 字节）',
+        'success',
+      )
     } catch (err) {
       notify('保存失败：' + err.message, 'error')
     } finally {
