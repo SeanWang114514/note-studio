@@ -420,4 +420,8 @@
       return cloneValue(value, new Map())
     })
   }
-})()
+})();
+// ↑ 结尾这个分号不能省：本文件会被原样前置进压缩后的 worker 产物，
+//   若以 `})()` 结尾而下一段以 `(` 开头，JS 的 ASI 不会补分号，两段会被粘成
+//   一次函数调用，worker 立刻抛「is not a function」并静默死掉。
+//   vite.config.js 的注入已额外补 `;`，这里是第二道保险。

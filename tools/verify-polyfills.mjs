@@ -175,4 +175,43 @@ assert.equal(cloned.cyc.self, cloned.cyc, '循环引用应保持结构且不死�
 assert.deepEqual(cloned.list, [1, [2]])
 console.log('✓ structuredClone（含循环引用 / Map / Set / 定型数组）')
 
+// ── 9) 注入进 worker 产物的拼接安全性（v0.1.17 真凶的回归护栏）────────────
+// 背景：polyfills.js 会被 vite.config.js 原样前置进压缩后的 pdf.worker 产物。
+// 它结尾曾是 `})()`，而压缩产物开头是 `(function(){...`；JS 的 ASI 不会在 `(`
+// 前补分号，两段于是粘成 `})(...)(function(){...})` —— 是**合法语法**，所以
+// 光看语法检查发现不了；实际运行时 worker 一加载就抛
+// 「(intermediate value)(...) is not a function」，只打一行 console.error，
+// pdf.js 永远等不到 ready，页面就卡在「正在打开 PDF…」。
+// 这里真正把「拼起来的代码」跑一遍，断言 polyfills 的执行结果没被污染。
+const { readFileSync } = await import('node:fs')
+const { fileURLToPath } = await import('node:url')
+const polyfillSrc = readFileSync(
+  fileURLToPath(new URL('../src/lib/polyfills.js', import.meta.url)),
+  'utf8',
+)
+
+// 模拟 real worker 产物的开头（压缩后以 `(function(){` 起头）
+const fakeWorkerTail = '(function(){"use strict";globalThis.__workerBooted=true})();'
+const glued = `${polyfillSrc}\n;\n${fakeWorkerTail}`
+
+// eslint-disable-next-line no-new-func
+new Function(glued)()
+assert.equal(globalThis.__workerBooted, true, 'worker 产物必须真的执行到（拼接后不能变成一次函数调用）')
+console.log('✓ 注入 worker 的拼接不会触发 ASI 陷阱')
+
+// 源码自身也应以 `;` 收尾（第二道保险）。
+// 注意要剥掉尾部注释再判断 —— 文件末尾有说明性注释，`trimEnd()` 看到的是注释不是代码。
+const polyfillCodeTail = polyfillSrc.replace(/\/\/[^\n]*$/gm, '').trimEnd()
+assert.match(polyfillCodeTail, /;\s*$/, 'polyfills.js 的代码应以分号结尾，避免被前置拼接时粘连')
+console.log('✓ polyfills.js 以分号收尾')
+
+// vite.config.js 的注入必须显式补 `;`
+const viteSrc = readFileSync(fileURLToPath(new URL('../vite.config.js', import.meta.url)), 'utf8')
+assert.match(
+  viteSrc,
+  /const injected = `\$\{source\}\\n;\\n`/,
+  'vite.config.js 注入 worker 时必须写成 `${source}\\n;\\n`（缺分号会让 worker 静默死掉）',
+)
+console.log('✓ vite.config.js 注入worker 时补了分号')
+
 console.log('\n全部断言通过 ✅')

@@ -6,6 +6,15 @@ import react from '@vitejs/plugin-react'
 // pdfjs 的 worker 跑在独立线程里，主线程的补丁到不了它，而 worker 产物里同样
 // 调用了 Promise.withResolvers 等新 API（一调用就抛 TypeError，整条 PDF 加载
 // 链路失败）。这里把同一份 src/lib/polyfills.js 原样前置进 worker 产物。
+//
+// ⚠️ 拼接必须留分号（ASI 陷阱，v0.1.15~v0.1.17 的 APK 打开 PDF 全部卡死的真凶）：
+//    polyfills.js 结尾是 `})()`，而压缩后的 worker 产物开头是 `(function(){...`,
+//    JS 的自动分号插入**不会**在 `(` 前补分号，两段于是被粘成
+//    `})(...)(function(){...})` —— worker 一加载就抛
+//    「(intermediate value)(...) is not a function」，只往 console 打一行错，
+//    pdf.js 永远等不到 worker 的 ready 消息，于是页面停在「正在打开 PDF…」
+//    既不 resolve 也不 reject，也不给用户任何提示。
+//    所以这里显式补 `\n;\n`，不依赖源码文件自身的结尾写法。
 function pdfWorkerPolyfills() {
   let source = ''
   return {
@@ -25,10 +34,12 @@ function pdfWorkerPolyfills() {
       }
       for (const output of Object.values(bundle)) {
         if (!/pdf[.-]?worker/i.test(output.fileName || '')) continue
+        // 见文件头注释：`\n;\n` 是硬性要求，缺了它 worker 会静默死掉。
+        const injected = `${source}\n;\n`
         if (output.type === 'chunk') {
-          output.code = `${source}\n${output.code}`
+          output.code = `${injected}${output.code}`
         } else if (typeof output.source === 'string') {
-          output.source = `${source}\n${output.source}`
+          output.source = `${injected}${output.source}`
         }
       }
     },
