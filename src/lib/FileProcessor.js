@@ -18,10 +18,16 @@ import { renderPageToCanvas, renderTextLayer } from './pdf/pdfRenderer.js'
 import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes, writeTextEditsToPdf } from './pdf/pdfSaver.js'
 import { isNativeSaveAvailable, saveToDownloads } from './nativeSave.js'
 import { ANNOT_DATA_STORE, HANDLE_STORE, idbRequest } from './idb.js'
-import { getFileBlob, putFileBlob } from './fileCache.js'
+import { hasFileBlob, putFileBlob } from './fileCache.js'
 
 // 便于调用方从一个入口拿到缓存 API（App / SettingsModal 直接 import 也行）
-export { clearFileCache, fileCacheStats, getFileBlob, putFileBlob } from './fileCache.js'
+export {
+  clearFileCache,
+  fileCacheStats,
+  getFileBlob,
+  hasFileBlob,
+  putFileBlob,
+} from './fileCache.js'
 
 export const FILE_TYPES = {
   PDF: 'pdf',
@@ -215,9 +221,9 @@ function refreshEntryFile(entry, data) {
         : entry?.file?.type || 'application/octet-stream'
     entry.file = new File([data], entry.name, { type, lastModified: Date.now() })
     // 缓存里也要跟着更新：否则「保存后重开最近文件」会看到保存前的旧内容。
-    // 只在该条目本来就有缓存时才写（没缓存的说明是句柄路径或超限文件）。
-    getFileBlob(entry.id).then((row) => {
-      if (row) putFileBlob(entry.id, entry.file).catch(() => {})
+    // 只在该条目本来就有缓存时才写；用 hasFileBlob 只读元数据表，不会把大文件读出来。
+    hasFileBlob(entry.id).then((cached) => {
+      if (cached) putFileBlob(entry.id, entry.file).catch(() => {})
     })
   } catch {
     // 构造 File 失败（极端 WebView）时保持旧引用，至少不比刷新前更糟

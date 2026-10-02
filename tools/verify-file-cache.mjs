@@ -1,5 +1,5 @@
 // 验证 src/lib/fileCache.js：用最小 IndexedDB mock 跑缓存写入 / 上限淘汰 / 清除。
-// 运行：node tools/verify-file-cache.mjs
+// 运行：npm run verify:file-cache
 //
 // （FileProcessor.js 里 import 了 `pdfjs-dist/...?worker` 这种 Vite 专有写法，
 //   在 Node 里加载不了，所以缓存逻辑拆到 fileCache.js + idb.js 才能这样单测。）
@@ -85,8 +85,12 @@ globalThis.indexedDB = {
   },
 }
 
-const { BLOB_MAX_FILE, BLOB_MAX_TOTAL, clearFileCache, fileCacheStats, getFileBlob, putFileBlob } =
+const { BLOB_MAX_FILE, BLOB_MAX_TOTAL, clearFileCache, fileCacheStats, getFileBlob, hasFileBlob, putFileBlob } =
   await import('../src/lib/fileCache.js')
+const { BLOB_META_STORE, BLOB_STORE, DB_NAME, DB_VERSION } = await import('../src/lib/idb.js')
+
+/** 直接看底层两张表，验证「元数据与实体分表」这个设计约束。 */
+const rawStore = (storeName) => fakeDbs.get(`${DB_NAME}@${Math.max(DB_VERSION, 5)}`).stores.get(storeName)
 
 const MB = 1024 * 1024
 const fakeFile = (name, sizeMB) => ({
@@ -109,26 +113,50 @@ const row = await getFileBlob('file-a')
 assert.ok(row, '应能读回缓存')
 assert.equal(row.name, 'a.pdf')
 assert.equal(row.size, 2 * MB)
-assert.equal(row.key, 'blob:file-a')
+assert.equal(row.key, 'meta:file-a')
 assert.ok(row.blob, '应带 blob 供构造 File')
-console.log('✓ 写入 / 读取 / 统计')
+assert.equal(await hasFileBlob('file-a'), true)
+console.log('✓ 写入 / 读取 / 统计 / hasFileBlob')
 
-// ── 2. 未缓存的 id 返回 null ──────────────────────────────────────────
+// ── 2. 元数据与实体分表（这是性能设计约束，不是实现细节）──────────────
+const blobStore = rawStore(BLOB_STORE)
+const metaStore = rawStore(BLOB_META_STORE)
+assert.equal(blobStore.size, 2, 'blob 表应只有实体记录')
+assert.equal(metaStore.size, 2, 'meta 表应只有元数据记录')
+for (const rec of blobStore.values()) {
+  assert.deepEqual(Object.keys(rec).sort(), ['blob', 'key'], 'blob 表不得混入元数据')
+}
+for (const rec of metaStore.values()) {
+  assert.ok(!('blob' in rec), 'meta 表不得混入实体')
+  assert.ok('savedAt' in rec && 'size' in rec)
+}
+console.log('✓ 元数据与实体分表（统计/淘汰只碰元数据表）')
+
+// ── 3. 未缓存的 id ────────────────────────────────────────────────────
 assert.equal(await getFileBlob('file-nope'), null)
-console.log('✓ 未命中返回 null')
+assert.equal(await hasFileBlob('file-nope'), false)
+console.log('✓ 未命中返回 null / false')
 
-// ── 3. 超大文件不缓存（并清掉同名旧缓存，避免重开旧内容）─────────────
+// ── 4. 超大文件不缓存（并清掉同名旧缓存）──────────────────────────────
 assert.equal(BLOB_MAX_FILE, 64 * MB)
 assert.equal(await putFileBlob('file-huge', fakeFile('huge.pdf', 65)), false)
 assert.equal(await getFileBlob('file-huge'), null)
-// 先有普通缓存、再出现同名超大文件时，旧缓存必须被清掉
 assert.equal(await putFileBlob('file-big', fakeFile('big.pdf', 1)), true)
 assert.ok(await getFileBlob('file-big'))
 assert.equal(await putFileBlob('file-big', fakeFile('big.pdf', 100)), false)
 assert.equal(await getFileBlob('file-big'), null, '超大文件应清掉同名旧缓存')
-console.log('✓ 超大文件跳过 + 清理同名旧缓存')
+assert.equal(await hasFileBlob('file-big'), false)
+assert.equal(blobStore.size, metaStore.size, '两表记录数应始终一致（不留孤儿实体）')
+console.log('✓ 超大文件跳过 + 清理同名旧缓存（两表同步）')
 
-// ── 4. 读取会刷新 savedAt（淘汰按「最近打开」算）─────────────────────
+// ── 5. 实体丢失时清掉假缓存 ──────────────────────────────────────────
+await putFileBlob('file-ghost', fakeFile('ghost.pdf', 2))
+blobStore.delete('blob:file-ghost') // 模拟写入中断 / 被系统清理
+assert.equal(await getFileBlob('file-ghost'), null, '实体没了就不该报命中')
+assert.equal(await hasFileBlob('file-ghost'), false, '元数据也应被清掉')
+console.log('✓ 实体丢失时清理元数据（不产生假缓存）')
+
+// ── 6. 读取刷新 savedAt（淘汰按「最近打开」算）───────────────────────
 const before = (await getFileBlob('file-a')).savedAt
 await sleep(8)
 await getFileBlob('file-a')
@@ -136,9 +164,8 @@ const after = (await getFileBlob('file-a')).savedAt
 assert.ok(after > before, 'savedAt 应被刷新')
 console.log('✓ 读取刷新 savedAt')
 
-// ── 5. 总量上限淘汰（最久未用的先走）─────────────────────────────────
+// ── 7. 总量上限淘汰（最久未用的先走）─────────────────────────────────
 assert.equal(BLOB_MAX_TOTAL, 256 * MB)
-// 清空重来，写入 5 个 60MB（单个都在 64MB 以内）= 300MB > 256MB
 await clearFileCache()
 const names = ['c1', 'c2', 'c3', 'c4', 'c5']
 for (const n of names) {
@@ -151,28 +178,29 @@ assert.equal(stats.count, 4, '300MB 写入后应淘汰到 4 个（240MB）')
 assert.equal(await getFileBlob('file-c1'), null, '最久未用的 c1 应先被淘汰')
 assert.ok(await getFileBlob('file-c2'), '较新的 c2 应保留')
 assert.ok(await getFileBlob('file-c5'), '最新的 c5 应保留')
-console.log('✓ 总量上限淘汰（最久未用优先）')
+assert.equal(blobStore.size, metaStore.size, '淘汰后两表仍应一致')
+console.log('✓ 总量上限淘汰（最久未用优先，两表一致）')
 
-// ── 6. 最近打开的不会被淘汰（读一次 c2 后写入更多，c2 应留存）────────
+// ── 8. 最近打开的不会被淘汰 ──────────────────────────────────────────
 await sleep(6)
 await getFileBlob('file-c2') // 刷新 c2 的使用时间
 await sleep(6)
 await putFileBlob('file-c6', fakeFile('c6.pdf', 60))
-const kept = await getFileBlob('file-c2')
-assert.ok(kept, '刚打开过的 c2 不应被淘汰')
+assert.ok(await getFileBlob('file-c2'), '刚打开过的 c2 不应被淘汰')
 console.log('✓ 最近打开的优先保留')
 
-// ── 7. 清除缓存 ──────────────────────────────────────────────────────
+// ── 9. 清除缓存 ──────────────────────────────────────────────────────
 const statsBefore = await fileCacheStats()
 const cleared = await clearFileCache()
 assert.equal(cleared.removed, statsBefore.count)
 assert.equal(cleared.bytes, statsBefore.bytes)
-stats = await fileCacheStats()
-assert.deepEqual(stats, { count: 0, bytes: 0 })
+assert.deepEqual(await fileCacheStats(), { count: 0, bytes: 0 })
 assert.equal(await getFileBlob('file-c2'), null)
-console.log('✓ 清除缓存（返回释放量 + 清空）')
+assert.equal(blobStore.size, 0)
+assert.equal(metaStore.size, 0)
+console.log('✓ 清除缓存（返回释放量 + 两表清空）')
 
-// ── 8. 非法输入不抛错 ────────────────────────────────────────────────
+// ── 10. 非法输入不抛错 ───────────────────────────────────────────────
 assert.equal(await putFileBlob('file-x', null), false)
 assert.equal(await putFileBlob('file-x', {}), false)
 assert.deepEqual(await clearFileCache(), { removed: 0, bytes: 0 })

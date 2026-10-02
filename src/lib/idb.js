@@ -9,17 +9,19 @@
  */
 
 export const DB_NAME = 'noteflow-store'
-export const DB_VERSION = 4
+export const DB_VERSION = 5
 export const HANDLE_STORE = 'handles'
 export const ANNOT_DATA_STORE = 'ann-data'
 /** APK / 无 File System Access API 时缓存文件内容，供「最近文件」跨会话重开 */
 export const BLOB_STORE = 'file-blobs'
+/** 上面那份缓存的元数据（名字/大小/最近使用时间）。与实体分表的原因见 fileCache.js */
+export const BLOB_META_STORE = 'file-blob-meta'
 
 export function openDb() {
   return new Promise((resolve, reject) => {
     // 强制升级版本以确保所有 store 存在（解决 "object store not found" 错误：
     // 旧 DB 在同一版本中可能缺少新增的 store，onupgradeneeded 不会触发）
-    const DB_VER_MAX = Math.max(DB_VERSION, 4)
+    const DB_VER_MAX = Math.max(DB_VERSION, 5)
     const req = indexedDB.open(DB_NAME, DB_VER_MAX)
     req.onupgradeneeded = () => {
       const db = req.result
@@ -31,6 +33,9 @@ export function openDb() {
       }
       if (!db.objectStoreNames.contains(BLOB_STORE)) {
         db.createObjectStore(BLOB_STORE, { keyPath: 'key' })
+      }
+      if (!db.objectStoreNames.contains(BLOB_META_STORE)) {
+        db.createObjectStore(BLOB_META_STORE, { keyPath: 'key' })
       }
     }
     req.onsuccess = () => resolve(req.result)
