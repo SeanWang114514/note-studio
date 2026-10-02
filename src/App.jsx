@@ -59,6 +59,7 @@ import {
   addRecent,
   applyGridOp,
   buildDocxFromHtml,
+  cacheAfterOpenDeferred,
   detectType,
   ensurePermission,
   FILE_TYPES,
@@ -1743,6 +1744,7 @@ function PdfTextView({ entry, notify }) {
         if (cancelled) return
         setMarkdown(md)
         setReady(true)
+        cacheAfterOpenDeferred(entry)
       } catch (err) {
         if (!cancelled) {
           setFailed(true)
@@ -4757,6 +4759,9 @@ function DocxView({ entry, notify }) {
         if (cancelled) return
         setHtml(htmlText)
         setReady(true)
+        // 文档已解析完，这时才把字节排进本地缓存（APK 的「最近文件」靠它重开），
+        // 不会和上面的读取抢同一个 content:// 源
+        cacheAfterOpenDeferred(entry)
       } catch (err) {
         if (!cancelled) notify(`文档解析失败：${err.message}`, 'error')
       }
@@ -5014,6 +5019,7 @@ function MarkdownView({ entry, notify }) {
         textRef.current = {}
         setBlocks(textToBlocks(text))
         setDirty(false)
+        cacheAfterOpenDeferred(entry)
       } catch (err) {
         if (!cancelled) notify(`Markdown 读取失败：${err.message}`, 'error')
       }
@@ -5473,6 +5479,7 @@ function EpubView({ entry, notify }) {
         setEpubBook(book)
         setHtml(book.html)
         setReady(true)
+        cacheAfterOpenDeferred(entry)
       } catch (err) {
         if (!cancelled) notify(`EPUB 解析失败：${err.message}`, 'error')
       }
@@ -6039,6 +6046,7 @@ function ExcelView({ entry, notify }) {
     setWbOps([])
     redoOpsRef.current = []
     setReady(true)
+    cacheAfterOpenDeferred(entry)
   }, [entry])
 
   useEffect(() => {
@@ -6791,6 +6799,7 @@ function TextView({ entry, notify }) {
         setText(t)
         setReady(true)
         setDirty(false)
+        cacheAfterOpenDeferred(entry)
       } catch (err) {
         if (!cancelled) notify(`文本读取失败：${err.message}`, 'error')
       }

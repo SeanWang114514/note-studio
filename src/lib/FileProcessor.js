@@ -18,7 +18,7 @@ import { renderPageToCanvas, renderTextLayer } from './pdf/pdfRenderer.js'
 import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes, writeTextEditsToPdf } from './pdf/pdfSaver.js'
 import { isNativeSaveAvailable, saveToDownloads } from './nativeSave.js'
 import { ANNOT_DATA_STORE, HANDLE_STORE, idbRequest } from './idb.js'
-import { hasFileBlob, putFileBlob } from './fileCache.js'
+import { hasFileBlob, putFileBlob, putFileBlobBytes, queueFileBlobBytes, queueJob } from './fileCache.js'
 
 // 便于调用方从一个入口拿到缓存 API（App / SettingsModal 直接 import 也行）
 export {
@@ -27,6 +27,8 @@ export {
   getFileBlob,
   hasFileBlob,
   putFileBlob,
+  putFileBlobBytes,
+  queueFileBlobBytes,
 } from './fileCache.js'
 
 export const FILE_TYPES = {
@@ -85,23 +87,24 @@ export async function pickFiles() {
         input.addEventListener('cancel', () => resolve([]), { once: true })
         input.click()
       })
-      return files.map((file) => {
-        const entry = {
-          id: `file-${file.name}-${file.size}-${file.lastModified}`,
-          name: file.name,
-          kind: 'file',
-          type: detectType(file.name),
-          size: file.size,
-          lastModified: file.lastModified,
-          handle: null,
-          file,
-          nativeReadonly: true,
-        }
-        // 存一份本地缓存：APK 里没有文件句柄，最近文件只能靠它重开。
-        // 不 await —— 大文件写入不该拖慢「打开」这个动作。
-        putFileBlob(entry.id, file).catch(() => {})
-        return entry
-      })
+      return files.map((file) => ({
+        id: `file-${file.name}-${file.size}-${file.lastModified}`,
+        name: file.name,
+        kind: 'file',
+        type: detectType(file.name),
+        size: file.size,
+        lastModified: file.lastModified,
+        handle: null,
+        file,
+        nativeReadonly: true,
+      }))
+      // ⚠️ 这里**不能**顺手把 file 写进本地缓存。
+      // 安卓里选中的文件是 content:// 支撑的 blob，应用紧接着就要拿同一个 File 去
+      // arrayBuffer() 喂 pdf.js；并发写 IndexedDB 会和这次读取互相卡住，于是空白页
+      // 永远停在「正在打开 PDF…」（v0.1.16 的回归就是这么来的）。
+      // 缓存改由「打开成功之后」用已经读出来的字节排队写入 —— 见下面的
+      // cacheAfterOpen / lib/fileCache.js 的 queueFileBlobBytes。
+
     } finally {
       input.remove()
     }
@@ -222,12 +225,71 @@ function refreshEntryFile(entry, data) {
     entry.file = new File([data], entry.name, { type, lastModified: Date.now() })
     // 缓存里也要跟着更新：否则「保存后重开最近文件」会看到保存前的旧内容。
     // 只在该条目本来就有缓存时才写；用 hasFileBlob 只读元数据表，不会把大文件读出来。
+    // 走串行队列：这里的 data 是刚写出去的新内容（内存里的 Blob），不是 content:// 源文件，
+    // 但仍避免多个大文件同时落盘把 WebView 卡住。
     hasFileBlob(entry.id).then((cached) => {
-      if (cached) putFileBlob(entry.id, entry.file).catch(() => {})
+      if (!cached) return
+      const bytes =
+        typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data)
+      queueFileBlobBytes(entry.id, entry.name, bytes, type)
     })
   } catch {
     // 构造 File 失败（极端 WebView）时保持旧引用，至少不比刷新前更糟
   }
+}
+
+/**
+ * 打开成功之后再把字节写进本地缓存（APK 的「最近文件」靠它重开）。
+ *
+ * 必须在打开**之后**调用：调用方已经把文件读进内存了，这里只是复制一份进 IndexedDB，
+ * 不会和 pdf.js 的读取抢同一个 content:// 源，也就不会出现「永远停在正在打开 PDF…」。
+ * 调用方拿不到字节时可以不调 —— 代价只是这个文件不进最近文件的可重开列表。
+ */
+export function cacheAfterOpen(entry, bytes, type) {
+  if (!entry?.id || !bytes) return
+  try {
+    queueFileBlobBytes(entry.id, entry.name, bytes, type || entry.file?.type)
+  } catch {
+    // 缓存失败不影响打开
+  }
+}
+
+/**
+ * 没有现成字节时的「打开之后再缓存」：延后去读原始文件。
+ *
+ * 只能在文档**已经打开完**之后调用（各视图的 open effect 成功分支）。此时 pdf.js /
+ * mammoth 等已经读完，不会再有并发读同一个 blob 的抢流问题；读取本身也排进串行队列，
+ * 避免几个大文件同时落盘。
+ */
+export function cacheAfterOpenDeferred(entry, delayMs = 1500) {
+  if (!entry?.id || entry.handle) return // 有句柄（桌面）不需要缓存
+  const timer = setTimeout(() => {
+    queueCacheFromSource(entry)
+  }, delayMs)
+  // 页面卸载时清掉，避免退出那一刻还在读大文件
+  try {
+    window.addEventListener(
+      'pagehide',
+      () => clearTimeout(timer),
+      { once: true },
+    )
+  } catch {
+    // 极端环境没有 window 就算了
+  }
+}
+
+/** 串行队列里从源文件读一次字节并写缓存（读失败就静默跳过）。 */
+function queueCacheFromSource(entry) {
+  const job = async () => {
+    try {
+      if (await hasFileBlob(entry.id)) return false // 已经有缓存，不用再读源文件
+      const buf = await entry.file.arrayBuffer()
+      return putFileBlobBytes(entry.id, entry.name, new Uint8Array(buf), entry.file?.type)
+    } catch {
+      return false
+    }
+  }
+  return queueJob(job)
 }
 
 export async function saveTextFile(entry, content) {

@@ -85,7 +85,7 @@ globalThis.indexedDB = {
   },
 }
 
-const { BLOB_MAX_FILE, BLOB_MAX_TOTAL, clearFileCache, fileCacheStats, getFileBlob, hasFileBlob, putFileBlob } =
+const { BLOB_MAX_FILE, BLOB_MAX_TOTAL, clearFileCache, fileCacheStats, flushFileBlobQueue, getFileBlob, hasFileBlob, putFileBlob, putFileBlobBytes, queueFileBlobBytes } =
   await import('../src/lib/fileCache.js')
 const { BLOB_META_STORE, BLOB_STORE, DB_NAME, DB_VERSION } = await import('../src/lib/idb.js')
 
@@ -205,5 +205,64 @@ assert.equal(await putFileBlob('file-x', null), false)
 assert.equal(await putFileBlob('file-x', {}), false)
 assert.deepEqual(await clearFileCache(), { removed: 0, bytes: 0 })
 console.log('✓ 非法输入静默返回')
+
+// ── 11. 字节入口（打开之后才缓存，避免和源文件读取抢流）──────────────
+// 这是修「永远停在正在打开 PDF…」的关键：缓存只吃调用方已读出的字节，
+// 绝不再去读那个 content:// 源文件。
+const bytes = new Uint8Array([1, 2, 3, 4, 5])
+assert.equal(await putFileBlobBytes('file-b1', 'b1.pdf', bytes, 'application/pdf'), true)
+const b1 = await getFileBlob('file-b1')
+assert.ok(b1, '字节入口应能写进缓存')
+assert.equal(b1.size, 5)
+assert.equal(b1.name, 'b1.pdf')
+assert.equal(b1.type, 'application/pdf')
+assert.equal(b1.blob.size, 5, 'blob 大小应与字节一致')
+assert.equal(rawStore(BLOB_STORE).get('blob:file-b1').blob instanceof Blob, true)
+// 超大字节同样跳过
+assert.equal(await putFileBlobBytes('file-b2', 'b2.pdf', new Uint8Array(BLOB_MAX_FILE + 1)), false)
+assert.equal(await getFileBlob('file-b2'), null)
+assert.equal(await putFileBlobBytes('file-b3', 'b3.pdf', new Uint8Array(0)), false, '空字节不入缓存')
+console.log('✓ 字节入口写入 / 大小上限 / 空字节')
+
+// ── 12. 串行队列：按序落盘、同一 id 不重复排队、可等待收尾 ────────────
+await clearFileCache()
+for (const i of [1, 2, 3]) {
+  queueFileBlobBytes(`file-q${i}`, `q${i}.pdf`, new Uint8Array([i, i, i]))
+}
+queueFileBlobBytes('file-q1', 'q1.pdf', new Uint8Array([9])) // 同一 id 重复排队应被忽略
+await flushFileBlobQueue()
+assert.deepEqual(await fileCacheStats(), { count: 3, bytes: 9 })
+const q1 = await getFileBlob('file-q1')
+assert.equal(q1.size, 3, '同一 id 的第二次排队不应覆盖/追加')
+assert.equal(blobStore.size, metaStore.size)
+console.log('✓ 串行队列（去重 + 可等待 + 两表一致）')
+
+// ── 13. 回归护栏：选文件时不得并发写源文件 ───────────────────────────
+// v0.1.16 的 bug：pickFiles 里顺手 putFileBlob(id, file)，而应用紧接着要拿同一个
+// content:// blob 去 arrayBuffer() 喂 pdf.js —— 两次读互相卡住，界面永远停在
+// 「正在打开 PDF…」，不报错也不结束。这条断言把「打开路径不许读源 blob」钉死。
+const fs = await import('node:fs')
+const path = await import('node:path')
+const root = path.resolve(import.meta.dirname, '..')
+const pickerSource = fs.readFileSync(path.join(root, 'src/lib/FileProcessor.js'), 'utf8')
+const pickFilesBody = pickerSource.slice(
+  pickerSource.indexOf('export async function pickFiles'),
+  pickerSource.indexOf('export async function putFileHandle'),
+)
+assert.ok(!pickerSource.includes('putFileBlob(entry.id, file)'), '选文件路径不得把源 blob 写进缓存')
+assert.ok(
+  !/putFileBlob\w*\(\s*entry\.id\s*,\s*(file|entry\.file)\s*[,)]/.test(pickFilesBody),
+  'pickFiles 里不得把源 File 交给缓存（会和 pdf.js 的读取抢同一个 content:// 流）',
+)
+assert.ok(
+  pickerSource.includes('cacheAfterOpenDeferred'),
+  '非 PDF 的读取路径应走「打开之后再缓存」',
+)
+const pdfView = fs.readFileSync(path.join(root, 'src/components/PdfEditorView.jsx'), 'utf8')
+assert.ok(
+  pdfView.includes('cacheAfterOpen(entry, openedBytes'),
+  'PDF 视图应在打开成功后用已读出的字节缓存',
+)
+console.log('✓ 回归护栏：打开路径不读源 blob（缓存只在打开之后）')
 
 console.log('\n全部断言通过 ✅')

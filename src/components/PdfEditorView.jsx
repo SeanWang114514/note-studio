@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import {
   appendBlankPdfPage,
+  cacheAfterOpen,
   loadAnnotations,
   openPdf,
   removeLastPdfPage,
@@ -170,6 +171,11 @@ export default function PdfEditorView({ entry, notify, overlay = null, onViewerS
         setPdf(doc)
         setNumPages(doc.numPages)
         setReady(true)
+        // 文档已经开好了，这时才把字节排进本地缓存（APK 的「最近文件」靠它重开）。
+        // 用 openPdf 已经读进 originalBytesCache 的那份字节，不再碰原始 content:// 文件 ——
+        // 打开期间并发读同一个 blob 会互相卡住，就是「永远停在正在打开 PDF…」的成因。
+        const openedBytes = getOriginalBytes(entry.id)
+        if (openedBytes && !entry.handle) cacheAfterOpen(entry, openedBytes, entry.file?.type)
       } catch (err) {
         if (!cancelled) {
           const why = describePdfError(err)

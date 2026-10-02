@@ -90,6 +90,74 @@ export async function hasFileBlob(id) {
   }
 }
 
+/**
+ * 从「已经在内存里的字节」写缓存。
+ *
+ * 为什么必须走这个入口而不是 putFileBlob(id, file)：
+ * 安卓里 <input type=file> 选中的文件是 content:// URI 支撑的 blob，**不是随便重读的**。
+ * 打开文件时应用正拿同一个 File 去 file.arrayBuffer() 喂 pdf.js，如果这时并发地把
+ * 同一个 blob 写进 IndexedDB，两次读会互相卡住 —— 表现就是空白页一直显示
+ * 「正在打开 PDF…」，不报错也不结束（这正是 v0.1.16 引入的回归）。
+ *
+ * 所以：缓存只吃调用方已经读出来的字节，绝不再去碰原始 File。
+ */
+export async function putFileBlobBytes(id, name, bytes, type) {
+  try {
+    const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+    if (!buf.byteLength) return false
+    if (buf.byteLength > BLOB_MAX_FILE) {
+      await dropEntry(id)
+      return false
+    }
+    // 原样存字节副本（Blob 由 IndexedDB 自己落盘，不再持有源 File）
+    const blob = new Blob([buf], { type: type || 'application/octet-stream' })
+    const meta = {
+      key: metaKey(id),
+      id,
+      name: name || '未命名',
+      type: type || 'application/octet-stream',
+      size: buf.byteLength,
+      lastModified: Date.now(),
+      savedAt: Date.now(),
+    }
+    await idbRequest(BLOB_STORE, 'readwrite', (s) => s.put({ key: blobKey(id), blob }))
+    await idbRequest(BLOB_META_STORE, 'readwrite', (s) => s.put(meta))
+    await evictBlobCache()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 串行化的「打开后再缓存」队列。
+ *
+ * 打开文件时把字节排进队列（调用方已经读过这些字节，这里只是复制一份进 IDB）；
+ * 队列保证同一时间只有一次写入，避免大文件同时落盘把 WebView 卡住。
+ */
+let cacheQueue = Promise.resolve()
+const queuedIds = new Set()
+
+/** 把任意异步任务排进串行队列（同一时间只跑一个，失败不打断后续）。 */
+export function queueJob(fn) {
+  cacheQueue = cacheQueue.then(fn).catch(() => false)
+  return cacheQueue
+}
+
+export function queueFileBlobBytes(id, name, bytes, type) {
+  if (!id || !bytes || queuedIds.has(id)) return cacheQueue
+  queuedIds.add(id)
+  return queueJob(() => putFileBlobBytes(id, name, bytes, type)).then((ok) => {
+    queuedIds.delete(id)
+    return ok
+  })
+}
+
+/** 等待队列里排着的缓存写完（测试/退出前用）。 */
+export function flushFileBlobQueue() {
+  return cacheQueue
+}
+
 /** 读回缓存内容：返回 {blob, name, type, lastModified, size}，没有则 null。 */
 export async function getFileBlob(id) {
   try {

@@ -48,6 +48,7 @@ export function describePdfError(err) {
   if (name === 'InvalidPDFException') return '文件不是有效的 PDF，或者已经损坏'
   if (name === 'MissingPDFException') return 'PDF 内容为空，找不到可读的页面数据'
   if (name === 'UnexpectedResponseException') return 'PDF 数据读取异常，请重新打开文件'
+  if (name === 'PdfOpenTimeout') return err.message
   return err?.message || '未知错误'
 }
 
@@ -67,6 +68,32 @@ function promptPdfPassword(retry) {
 /** getDocument 的公共参数 */
 function pdfOpenParams(bytes) {
   return { data: bytes.slice() }
+}
+
+/**
+ * 打开超时看门狗（毫秒）。
+ *
+ * 为什么需要：pdf.js 的 worker 一旦起不来（旧 WebView 里 worker 脚本挂了、或端口没
+ * 应答），getDocument() 的 promise 既不会 resolve 也不会 reject —— 界面就永远是
+ * 空白页一行「正在打开 PDF…」，用户看不到任何原因，只能退出去重开（v0.1.16 的
+ * 现象）。有了看门狗，至少能明确告诉用户卡在哪一步。
+ */
+const OPEN_TIMEOUT_MS = 25000
+
+function withTimeout(promise, ms, message) {
+  let timer = null
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer)
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(message)
+        err.name = 'PdfOpenTimeout'
+        reject(err)
+      }, ms)
+    }),
+  ])
 }
 
 /**
@@ -125,13 +152,17 @@ function openDocument(bytes, askPassword, cacheKey) {
   // Promise.resolve().then(start)：getDocument 撞上「worker 正在销毁」时是**同步**抛的，
   // 直接 start().catch(...) 根本接不住（异常会同步冒出去，重试就成了摆设）。
   const attempt = (i) =>
-    Promise.resolve()
-      .then(start)
-      .catch(async (err) => {
-        if (!workerGone(err) || i >= retryDelays.length) throw err
-        await new Promise((r) => setTimeout(r, retryDelays[i]))
-        return attempt(i + 1)
-      })
+    withTimeout(
+      Promise.resolve()
+        .then(start)
+        .catch(async (err) => {
+          if (!workerGone(err) || i >= retryDelays.length) throw err
+          await new Promise((r) => setTimeout(r, retryDelays[i]))
+          return attempt(i + 1)
+        }),
+      OPEN_TIMEOUT_MS,
+      'PDF 打开超时：渲染线程没有响应（可能是这台设备的 WebView 太旧）',
+    )
   return attempt(0)
 }
 

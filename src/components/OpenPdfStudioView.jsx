@@ -72,8 +72,16 @@ export default function OpenPdfStudioView({ entry, notify }) {
       frameRef.current?.contentWindow?.postMessage({ type: 'dart-pdf-editor:ping' }, window.location.origin)
     }
     retryTimerRef.current = window.setInterval(retry, 700)
+    // 编辑器一直不报到（iframe 里的 Flutter 引擎没起来 / 运行时缺失）时，别让界面
+    // 永远停在「正在打开 PDF…」——给一句能看懂的原因。
+    const hangTimer = window.setTimeout(() => {
+      if (sentRef.current) return
+      setError('PDF 编辑器没能启动（可能是内置编辑器运行时缺失，或这台设备的 WebView 太旧）')
+      setOpening(false)
+    }, 25000)
     return () => {
       loadSeqRef.current += 1
+      window.clearTimeout(hangTimer)
       if (retryTimerRef.current) window.clearInterval(retryTimerRef.current)
       retryTimerRef.current = null
       window.removeEventListener('message', onMessage)
