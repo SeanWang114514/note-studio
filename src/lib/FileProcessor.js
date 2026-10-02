@@ -17,6 +17,11 @@ import { openPdf as engineOpenPdf, getOriginalBytes, setOriginalBytes } from './
 import { renderPageToCanvas, renderTextLayer } from './pdf/pdfRenderer.js'
 import { writeAnnotationsToPdf, loadPdfAnnotationsFromBytes, writeTextEditsToPdf } from './pdf/pdfSaver.js'
 import { isNativeSaveAvailable, saveToDownloads } from './nativeSave.js'
+import { ANNOT_DATA_STORE, HANDLE_STORE, idbRequest } from './idb.js'
+import { getFileBlob, putFileBlob } from './fileCache.js'
+
+// 便于调用方从一个入口拿到缓存 API（App / SettingsModal 直接 import 也行）
+export { clearFileCache, fileCacheStats, getFileBlob, putFileBlob } from './fileCache.js'
 
 export const FILE_TYPES = {
   PDF: 'pdf',
@@ -47,10 +52,6 @@ const EXT_TO_TYPE = {
 }
 
 const RECENT_KEY = 'noteflow.recent.v1'
-const DB_NAME = 'noteflow-store'
-const DB_VERSION = 3
-const HANDLE_STORE = 'handles'
-const ANNOT_DATA_STORE = 'ann-data'
 
 // 批注内嵌进 zip 容器（docx/epub/pptx/xlsx）的隐藏条目
 const EMBED_ENTRY = 'noteflow/annotations.json'
@@ -78,17 +79,23 @@ export async function pickFiles() {
         input.addEventListener('cancel', () => resolve([]), { once: true })
         input.click()
       })
-      return files.map((file) => ({
-        id: `file-${file.name}-${file.size}-${file.lastModified}`,
-        name: file.name,
-        kind: 'file',
-        type: detectType(file.name),
-        size: file.size,
-        lastModified: file.lastModified,
-        handle: null,
-        file,
-        nativeReadonly: true,
-      }))
+      return files.map((file) => {
+        const entry = {
+          id: `file-${file.name}-${file.size}-${file.lastModified}`,
+          name: file.name,
+          kind: 'file',
+          type: detectType(file.name),
+          size: file.size,
+          lastModified: file.lastModified,
+          handle: null,
+          file,
+          nativeReadonly: true,
+        }
+        // 存一份本地缓存：APK 里没有文件句柄，最近文件只能靠它重开。
+        // 不 await —— 大文件写入不该拖慢「打开」这个动作。
+        putFileBlob(entry.id, file).catch(() => {})
+        return entry
+      })
     } finally {
       input.remove()
     }
@@ -131,37 +138,6 @@ export async function pickFiles() {
   return entries
 }
 
-function openDb() {
-  return new Promise((resolve, reject) => {
-    // 强制升级版本以确保所有 store 存在（解决 "object store not found" 错误：
-    // 旧 DB 在同一版本中可能缺少新增的 store，onupgradeneeded 不会触发）
-    const DB_VER_MAX = Math.max(DB_VERSION, 3)
-    const req = indexedDB.open(DB_NAME, DB_VER_MAX)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(HANDLE_STORE)) {
-        db.createObjectStore(HANDLE_STORE, { keyPath: 'key' })
-      }
-      if (!db.objectStoreNames.contains(ANNOT_DATA_STORE)) {
-        db.createObjectStore(ANNOT_DATA_STORE, { keyPath: 'key' })
-      }
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
-}
-
-async function idbRequest(storeName, mode, fn) {
-  const db = await openDb()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode)
-    const store = tx.objectStore(storeName)
-    const req = fn(store)
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
-}
-
 export async function putFileHandle(entry) {
   await idbRequest(HANDLE_STORE, 'readwrite', (s) =>
     s.put({ key: `file:${entry.id}`, handle: entry.handle }),
@@ -172,6 +148,9 @@ export async function getFileHandle(id) {
   const row = await idbRequest(HANDLE_STORE, 'readonly', (s) => s.get(`file:${id}`))
   return row?.handle
 }
+
+// 文件内容缓存（putFileBlob / getFileBlob / fileCacheStats / clearFileCache）见
+// lib/fileCache.js：APK 没有文件句柄，「最近文件」靠那份缓存重开。
 
 export async function putAnnotationHandle(id, handle) {
   await idbRequest(HANDLE_STORE, 'readwrite', (s) =>
@@ -235,6 +214,11 @@ function refreshEntryFile(entry, data) {
         ? 'text/plain;charset=utf-8'
         : entry?.file?.type || 'application/octet-stream'
     entry.file = new File([data], entry.name, { type, lastModified: Date.now() })
+    // 缓存里也要跟着更新：否则「保存后重开最近文件」会看到保存前的旧内容。
+    // 只在该条目本来就有缓存时才写（没缓存的说明是句柄路径或超限文件）。
+    getFileBlob(entry.id).then((row) => {
+      if (row) putFileBlob(entry.id, entry.file).catch(() => {})
+    })
   } catch {
     // 构造 File 失败（极端 WebView）时保持旧引用，至少不比刷新前更糟
   }

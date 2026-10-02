@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { LayoutPanelLeft, RotateCcw, Settings, X } from 'lucide-react'
+import { HardDrive, LayoutPanelLeft, RotateCcw, Settings, Trash2, X } from 'lucide-react'
 import { PANEL_DEFAULTS, resetPanel, usePanel } from '../lib/panelLayout.js'
+import { clearFileCache, fileCacheStats } from '../lib/fileCache.js'
+import { formatBytes } from '../lib/FileProcessor.js'
 
 /**
- * 设置弹窗：窗口与面板布局。
+ * 设置弹窗：窗口与面板布局 + 本地缓存管理。
  * （语音识别模型 / 手写识别模型相关配置已按需求整体移除。）
  */
 export default function SettingsModal({ open, onClose, notify }) {
@@ -11,10 +13,15 @@ export default function SettingsModal({ open, onClose, notify }) {
   const thumbs = usePanel('pdfThumbs')
   const annPanel = usePanel('annPanel')
   const [done, setDone] = useState('')
+  const [cache, setCache] = useState({ count: 0, bytes: 0 })
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setDone('')
+    fileCacheStats()
+      .then(setCache)
+      .catch(() => setCache({ count: 0, bytes: 0 }))
   }, [open])
 
   if (!open) return null
@@ -30,6 +37,23 @@ export default function SettingsModal({ open, onClose, notify }) {
     resetPanel('pdfThumbs')
     resetPanel('annPanel')
     flash('面板布局已恢复默认')
+  }
+
+  const clearCache = async () => {
+    setClearing(true)
+    try {
+      const { removed, bytes } = await clearFileCache()
+      setCache({ count: 0, bytes: 0 })
+      flash(
+        removed
+          ? `已清除本地缓存：${removed} 个文件，释放 ${formatBytes(bytes)}`
+          : '本地缓存本来就是空的',
+      )
+    } catch (err) {
+      notify?.(`清除缓存失败：${err?.message || err}`, 'error')
+    } finally {
+      setClearing(false)
+    }
   }
 
   const panels = [
@@ -96,6 +120,40 @@ export default function SettingsModal({ open, onClose, notify }) {
                 {done || `侧边栏默认 ${PANEL_DEFAULTS.sidebar.width}px、缩略图栏 ${PANEL_DEFAULTS.pdfThumbs.width}px、批注栏 ${PANEL_DEFAULTS.annPanel.width}px`}
               </span>
             </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">本地缓存</h3>
+            <p className="settings-hint">
+              打开过的文件会在本机存一份内容副本，供「最近文件」直接重开
+              （安卓 APK 里系统不给文件句柄，只能靠这份缓存）。
+              批注、手写等数据是另一套存储，清除缓存不会动它们。
+            </p>
+            {/* 用 div 而不是 label：label 里套 button 会把按钮的可访问名和点击
+                都跟整行文字绑在一起（.settings-panel-row 是按 class 定样式的） */}
+            <div className="settings-panel-row">
+              <span className="ocr-model-label">
+                <HardDrive size={13} />
+                文件内容缓存
+              </span>
+              <span className="settings-panel-meta">
+                {cache.count > 0
+                  ? `${cache.count} 个文件 · ${formatBytes(cache.bytes)}`
+                  : '暂无缓存'}
+              </span>
+              <button
+                className="tool-btn"
+                onClick={clearCache}
+                disabled={clearing || cache.count === 0}
+                title="清除全部文件内容缓存（不影响批注与已保存到下载目录的文件）"
+              >
+                <Trash2 size={14} />
+                {clearing ? '清除中…' : '清除缓存'}
+              </button>
+            </div>
+            <p className="ocr-model-hint">
+              缓存上限：单文件 64 MB、合计 256 MB，超出后自动淘汰最久未用的文件。
+            </p>
           </section>
 
           <section className="settings-section">

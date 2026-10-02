@@ -64,6 +64,7 @@ import {
   FILE_TYPES,
   formatBytes,
   formatDate,
+  getFileBlob,
   getFileHandle,
   getRecent,
   loadAnnotations,
@@ -805,7 +806,26 @@ export default function App() {
       try {
         const handle = await getFileHandle(item.id)
         if (!handle) {
-          notify('找不到该文件，请重新打开', 'error')
+          // APK / 无 File System Access API：句柄本来就不存在，改用本地缓存重开
+          const cached = await getFileBlob(item.id)
+          if (!cached?.blob) {
+            notify('本地没有这个文件的缓存了，请点「打开文件」重新选择', 'error')
+            return
+          }
+          const file = new File([cached.blob], cached.name || item.name, {
+            type: cached.type || 'application/octet-stream',
+            lastModified: cached.lastModified || Date.now(),
+          })
+          const entry = {
+            ...item,
+            type: detectType(item.name),
+            file,
+            handle: null,
+            size: file.size,
+            lastModified: file.lastModified,
+          }
+          setRecent(addRecent(entry))
+          addTab(entry)
           return
         }
         // 打开只需要「读」权限，可这里以前只问 readwrite：用户在权限提示里只给了读、
@@ -1078,12 +1098,23 @@ function RecentCard({ item, onClick }) {
     let cancelled = false
     ;(async () => {
       try {
+        // 句柄（桌面）优先；APK 里没有句柄，退到本地缓存 —— 缓存命中就不算「需重新打开」，
+        // 而且缩略图/摘要也能照常渲染。
+        let file = null
         const handle = await getFileHandle(item.id)
-        if (!handle) {
-          if (!cancelled) setMissing(true)
-          return
+        if (handle) {
+          file = await handle.getFile()
+        } else {
+          const cached = await getFileBlob(item.id)
+          if (!cached?.blob) {
+            if (!cancelled) setMissing(true)
+            return
+          }
+          file = new File([cached.blob], cached.name || item.name, {
+            type: cached.type || 'application/octet-stream',
+            lastModified: cached.lastModified || Date.now(),
+          })
         }
-        const file = await handle.getFile()
         if (item.type === FILE_TYPES.PDF && canvasRef.current) {
           const pdf = await openPdf(file)
           await renderPdfPage(pdf, 1, canvasRef.current, 0.5)
