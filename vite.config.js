@@ -1,9 +1,43 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// pdfjs 的 worker 跑在独立线程里，主线程的补丁到不了它，而 worker 产物里同样
+// 调用了 Promise.withResolvers 等新 API（一调用就抛 TypeError，整条 PDF 加载
+// 链路失败）。这里把同一份 src/lib/polyfills.js 原样前置进 worker 产物。
+function pdfWorkerPolyfills() {
+  let source = ''
+  return {
+    name: 'pdf-worker-polyfills',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      if (!source) {
+        try {
+          source = readFileSync(
+            fileURLToPath(new URL('./src/lib/polyfills.js', import.meta.url)),
+            'utf8',
+          )
+        } catch {
+          this.warn('读不到 src/lib/polyfills.js，pdf worker 未注入兼容补丁')
+          return
+        }
+      }
+      for (const output of Object.values(bundle)) {
+        if (!/pdf[.-]?worker/i.test(output.fileName || '')) continue
+        if (output.type === 'chunk') {
+          output.code = `${source}\n${output.code}`
+        } else if (typeof output.source === 'string') {
+          output.source = `${source}\n${output.source}`
+        }
+      }
+    },
+  }
+}
+
 export default defineConfig({
   base: './',
-  plugins: [react()],
+  plugins: [react(), pdfWorkerPolyfills()],
   resolve: {
     // pdfjs 的「主线程 API」与「worker」必须是同一份副本，否则 getDocument 抛
     //   The API version "x" does not match the Worker version "y"

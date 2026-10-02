@@ -1,3 +1,7 @@
+// 必须最先求值：补齐旧版 WebView 缺失的 Promise.withResolvers 等 API
+// （pdfjs 4.x 依赖它，缺了就是「PDF 打开失败：Promise.withResolvers is not a function」）。
+// 放在第一条 import，保证在 App → pdfEngine → pdfjs 求值之前打上补丁。
+import './lib/polyfills.js'
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
